@@ -1,78 +1,56 @@
-// src/App.jsx
-import { useEffect, useState } from "react";
-import { db } from "./firebase";
-import {
-  collection,
-  query,
-  orderBy,
-  limit,
-  onSnapshot,
-  addDoc,
-} from "firebase/firestore";
-
+import { useEffect, useMemo, useState } from "react";
 import Layout from "./components/Layout";
 import AreaHistory from "./components/AreaHistory";
 import DataTable from "./components/DataTable";
 import StatusPanel from "./components/StatusPanel";
 import StatusTiles from "./components/StatusTiles";
+import { useEspTelemetry } from "./hooks/useEspTelemetry";
+
+const MAX_POINTS = 200;
 
 export default function App() {
-  const [deviceId, setDeviceId] = useState("esp32-01");
+  const deviceId = "esp32-01";
+  const { data, error } = useEspTelemetry();
   const [rows, setRows] = useState([]);
-  const latest = rows.at(-1);
 
   useEffect(() => {
-    if (!deviceId) return;
-    const col = collection(db, "devices", deviceId, "measurements");
-    const q = query(col, orderBy("ts", "desc"), limit(200));
-    const unsub = onSnapshot(q, (snap) => {
-      const arr = [];
-      snap.forEach((doc) => {
-        const d = doc.data();
-        arr.push({
-          ts: d.ts?.toDate ? d.ts.toDate() : new Date(d.ts),
-          soil_raw: d.soil_raw ?? 0,
-          temp_c: d.temp_c ?? 0,
-          hum_air: d.hum_air ?? 0,
-          light_raw: d.light_raw ?? 0,
-          pump_state: d.pump_state ?? "OFF",
-          pump_ms: d.pump_ms ?? 0,
-          rule_id: d.rule_id ?? 0,
-        });
-      });
-      setRows(arr.reverse());
+    if (!data) return;
+    const ts = new Date();
+    setRows((prev) => {
+      const next = [
+        ...prev,
+        {
+          id: ts.getTime(),
+          ts,
+          soil: Number(data?.soil_raw ?? 0),
+          tempC: Number(data?.temp_c ?? 0),
+          humAir: Number(data?.humid ?? 0),
+          light: Number(data?.ldr_raw ?? 0),
+          pump: false,
+          rule: "-",
+          dur_ms: 0,
+        },
+      ];
+      return next.length > MAX_POINTS ? next.slice(-MAX_POINTS) : next;
     });
-    return () => unsub();
-  }, [deviceId]);
+  }, [data]);
 
-  // KPIs
-  const SOIL_MAX = 1023; // se o ADC for 12-bit, use 4095
-  const soilPct = Math.round(
-    ((SOIL_MAX - (latest?.soil_raw ?? 0)) / SOIL_MAX) * 100
-  );
-  const tempAmbiente = latest?.temp_c ?? 0;
-  const humNow = latest?.hum_air ?? 0; // ainda usamos na Notificação
-  const luzRaw = latest?.light_raw ?? 0;
-  const bombaOn = (latest?.pump_state ?? "OFF") === "ON";
+  const latest = rows.at(-1);
 
-  async function seedOne() {
-    if (!deviceId) return;
-    const col = collection(db, "devices", deviceId, "measurements");
-    await addDoc(col, {
-      ts: new Date(),
-      soil_raw: 400 + Math.floor(Math.random() * 300),
-      temp_c: +(22 + Math.random() * 6).toFixed(1),
-      hum_air: +(45 + Math.random() * 20).toFixed(0),
-      light_raw: 1000 + Math.floor(Math.random() * 2000),
-      pump_state: Math.random() > 0.7 ? "ON" : "OFF",
-      pump_ms: Math.random() > 0.7 ? 8000 : 0,
-      rule_id: Math.floor(Math.random() * 4) + 1,
-    });
-  }
+  const SOIL_MAX = 4095;
+  const soilPct = useMemo(() => {
+    if (!data) return 0;
+    if (typeof data.soil_pct === "number") return data.soil_pct;
+    return Math.round(((SOIL_MAX - (data.soil_raw ?? 0)) / SOIL_MAX) * 100);
+  }, [data]);
+
+  const tempAmbiente = data?.temp_c ?? 0;
+  const luzRaw = data?.ldr_raw ?? 0;
+  const bombaOn = false; // traga no JSON do ESP se quiser
 
   return (
-    <Layout deviceId={deviceId} onChangeDevice={setDeviceId} onSeed={seedOne}>
-      {/* ===== LINHA 1: gráfico (8 col) + notificações (4 col) ===== */}
+    <Layout deviceId={deviceId} onChangeDevice={() => {}} onSeed={() => {}}>
+      {/* LINHA 1: gráfico + notificações+status (no mesmo painel) */}
       <div className="grid cols-12">
         <div className="span-8">
           <AreaHistory rows={rows} />
@@ -83,22 +61,28 @@ export default function App() {
             <h3>Notificações</h3>
             <ul className="notif">
               <li>
-                Conexão estável com <b>{deviceId}</b>.
+                Conexão: <b>{error ? "OFFLINE" : "ONLINE"}</b>
+                {error && <span style={{ color: "#f87171" }}> — {error}</span>}
               </li>
               <li>Última leitura: {latest ? latest.ts.toLocaleString() : "—"}</li>
-              <li>
-                Bomba:{" "}
-                <span className={`badge ${bombaOn ? "on" : "off"}`}>
-                  {bombaOn ? "ON" : "OFF"}
-                </span>
-              </li>
-              <li>Umidade do ar (últ.): {humNow || 0}%</li>
+              <li>Umidade do ar (últ): {data ? Math.round(Number(data.humid ?? 0)) : "—"}%</li>
             </ul>
+
+            <div className="panel-sep" />
+
+            <h3 style={{ marginTop: 8 }}>Status</h3>
+            <StatusPanel
+              deviceId={deviceId}
+              perfil="Rosa"
+              local="Sala"
+              pumpOn={bombaOn}
+              lastTs={latest?.ts}
+            />
           </div>
         </div>
       </div>
 
-      {/* ===== LINHA 2: cartões quadrados de status ===== */}
+      {/* LINHA 2: 4 tiles */}
       <div className="grid cols-12">
         <div className="span-12">
           <StatusTiles
@@ -110,32 +94,15 @@ export default function App() {
         </div>
       </div>
 
-      {/* ===== LINHA 2.5: Painel de Status (opcional) ===== */}
-      <div className="grid cols-12">
-        <div className="span-4">
-          <StatusPanel
-            deviceId={deviceId}
-            perfil="Rosa"
-            local="Sala"
-            pumpOn={bombaOn}
-            lastTs={latest?.ts}
-          />
-        </div>
-      </div>
-
-      {/* ===== LINHA 3: Tabela (7 col) + Pizza placeholder (5 col) ===== */}
+      {/* LINHA 3: tabela + placeholder */}
       <div className="grid cols-12">
         <div className="span-7">
           <DataTable rows={rows} />
         </div>
-
         <div className="span-5">
           <div className="panel">
             <h3>Consumo de Água por Planta</h3>
-            <p className="muted">
-              Gráfico de pizza opcional (somatório por perfil/planta). Podemos
-              implementar depois.
-            </p>
+            <p className="muted">Gráfico de pizza opcional (somatório por perfil/planta).</p>
           </div>
         </div>
       </div>

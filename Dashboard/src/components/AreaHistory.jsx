@@ -1,39 +1,37 @@
-import { Line } from "react-chartjs-2";
 import {
-  Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Filler, Tooltip, Legend
-} from "chart.js";
-ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler, Tooltip, Legend);
+  ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid, Legend, Line
+} from "recharts";
 
-export default function AreaHistory({ rows }) {
-  const labels = rows.map(r => r.ts.toLocaleTimeString());
-  const data = {
-    labels,
-    datasets: [
-      {
-        label: "Umidade do Solo (raw)",
-        data: rows.map(r => r.soil_raw),
-        borderColor: "#34d399",
-        backgroundColor: "rgba(52,211,153,.12)",
-        tension: .35,
-        fill: true,
-        pointRadius: 2,
-      },
-    ]
-  };
-  const options = {
-    maintainAspectRatio:false,
-    plugins:{
-      legend:{labels:{color:"#9fb1c7"}}
-    },
-    scales:{
-      x:{ticks:{color:"#70839c"}, grid:{color:"rgba(255,255,255,.04)"}},
-      y:{ticks:{color:"#70839c"}, grid:{color:"rgba(255,255,255,.04)"}}
-    }
-  };
+export default function AreaHistory({ rows = [], title = "Histórico" }) {
+  const data = rows.map((r, i) => ({
+    idx: i + 1,
+    soil: Number(r?.soil ?? 0),
+  }));
+
   return (
-    <div className="panel" style={{height:340}}>
-      <h3>Histórico de Umidade do Solo (raw)</h3>
-      <div style={{height:270}}><Line data={data} options={options}/></div>
-    </div>
+    <>
+      <div className="panel-header">
+        <h3>{title}</h3>
+      </div>
+      <div style={{ width: "100%", height: 300 }}>
+        <ResponsiveContainer>
+          <AreaChart data={data} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+            <defs>
+              <linearGradient id="cSoil" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#10b981" stopOpacity={0.45}/>
+                <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+              </linearGradient>
+            </defs>
+            <CartesianGrid stroke="rgba(255,255,255,.06)" />
+            <XAxis dataKey="idx" tick={{ fill: "#9fb1c7", fontSize: 12 }} />
+            <YAxis tick={{ fill: "#9fb1c7", fontSize: 12 }} />
+            <Tooltip contentStyle={{ background: "#0f1621", border: "1px solid rgba(255,255,255,.06)" }}/>
+            <Legend />
+            <Area type="monotone" dataKey="soil" name="Umidade do Solo (raw)" stroke="#10b981" fill="url(#cSoil)" />
+            <Line type="monotone" dataKey="soil" stroke="#34d399" dot={false} name="Linha" />
+          </AreaChart>
+        </ResponsiveContainer>
+      </div>
+    </>
   );
 }
