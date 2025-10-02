@@ -1,4 +1,6 @@
+// src/App.jsx
 import { useEffect, useMemo, useState, useRef } from "react";
+import Toast from "./components/Toast";
 
 // Firestore
 import { db } from "./firebase";
@@ -19,10 +21,11 @@ import DataTable from "./components/DataTable";
 import StatusPanel from "./components/StatusPanel";
 import StatusTiles from "./components/StatusTiles";
 
-// ESP32 tempo real (apenas para tiles)
+// ESP32 tempo real (apenas para tiles/notificações)
 import { useEspTelemetry } from "./hooks/useEspTelemetry";
 
 const MAX_POINTS_DB = 200;
+const WATER_MIN_PCT = 5; // limiar para alerta
 
 export default function App() {
   const [deviceId, setDeviceId] = useState("esp32-01");
@@ -30,14 +33,30 @@ export default function App() {
   // ===== 1) ESP32 tempo real — somente tiles/notificações
   const { data: esp, error: espError } = useEspTelemetry();
   const SOIL_MAX = 4095;
+
   const soilPctLive = useMemo(() => {
     if (!esp) return 0;
     if (typeof esp.soil_pct === "number") return esp.soil_pct;
     return Math.round(((SOIL_MAX - (esp.soil_raw ?? 0)) / SOIL_MAX) * 100);
   }, [esp]);
+
   const tempAmbiente = esp?.temp_c ?? 0;
   const luzRaw = esp?.ldr_raw ?? 0;
-  const bombaOnLive = false; // envie no JSON do ESP32 se quiser refletir aqui
+  const bombaOnLive = false; // envie no JSON do ESP para refletir aqui, se quiser
+  const waterNowPct = typeof esp?.water_pct === "number" ? esp.water_pct : null;
+
+  // ===== Toast/Banner de nível d'água baixo (<5%)
+  const [lowLevelToast, setLowLevelToast] = useState(false);
+  const lastWaterOkRef = useRef(true);
+
+  useEffect(() => {
+    if (waterNowPct == null) return;
+    const ok = waterNowPct >= WATER_MIN_PCT;
+    const lastOk = lastWaterOkRef.current;
+    // dispara quando cruza de OK -> LOW
+    if (lastOk && !ok) setLowLevelToast(true);
+    lastWaterOkRef.current = ok;
+  }, [waterNowPct]);
 
   // ===== 2) Firestore — histórico e tabela (irrigação OU publicação manual)
   const [rowsDb, setRowsDb] = useState([]);
@@ -88,11 +107,15 @@ export default function App() {
       return;
     }
     if (publishing) return;
+
+    // cooldown simples (evita spam acidental)
+    if (Date.now() - lastPubRef.current < 2000) return;
+
     setPublishing(true);
     try {
       const col = collection(db, "devices", deviceId, "measurements");
       const payload = {
-        ts: serverTimestamp(),                 // timestamp do servidor
+        ts: serverTimestamp(), // timestamp do servidor
         soil_raw: Math.round(esp.soil_raw ?? 0),
         soil_pct: Math.round(esp.soil_pct ?? soilPctLive),
         temp_c: Number(esp.temp_c ?? 0),
@@ -147,6 +170,20 @@ export default function App() {
                 Umidade do ar (últ):{" "}
                 {latestDb ? Math.round(latestDb.humAir) : "—"}%
               </li>
+              {/* Nível d'água em tempo real (não vai para o BD) */}
+              <li>
+                Nível da água (agora):{" "}
+                <b
+                  style={{
+                    color:
+                      waterNowPct != null && waterNowPct < WATER_MIN_PCT
+                        ? "#f87171"
+                        : "#e6edf5",
+                  }}
+                >
+                  {waterNowPct != null ? `${waterNowPct}%` : "—"}
+                </b>
+              </li>
             </ul>
 
             <div className="panel-sep" />
@@ -170,6 +207,7 @@ export default function App() {
             umidadeSolo={soilPctLive}
             luzRaw={luzRaw}
             bombaOn={bombaOnLive}
+            waterPct={waterNowPct}  // <<< novo tile de nível d'água
           />
         </div>
       </div>
@@ -189,6 +227,14 @@ export default function App() {
           </div>
         </div>
       </div>
+
+      {/* ===== Banner/Toast de nível d'água baixo ===== */}
+      <Toast
+        show={lowLevelToast}
+        title="Nível de água baixo"
+        message={`Reservatório em ${waterNowPct ?? "—"}%. Reabasteça para evitar falhas na irrigação.`}
+        onClose={() => setLowLevelToast(false)}
+      />
     </Layout>
   );
 }
