@@ -31,6 +31,8 @@ int WATER_FULL  = 2200;  // leitura com reservat√≥rio cheio (ajustar na calibra√
 const float VREF = 3.3f;
 const int   ADCMAX = 4095;
 
+
+//CRIA O SERVIDOR WEB COM NA PORTA 80 E CARREGA AS ROTAS PARA O DASHBOARD USAR DEPOIS 
 WebServer server(80);
 
 // ---------- helpers ----------
