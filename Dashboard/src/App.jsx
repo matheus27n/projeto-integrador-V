@@ -1,6 +1,8 @@
-// src/App.jsx
+
 import { useEffect, useMemo, useState, useRef } from "react";
 import Toast from "./components/Toast";
+import WaterPie from "./components/WaterPie";
+
 
 // Firestore
 import { db } from "./firebase";
@@ -215,9 +217,9 @@ export default function App() {
       {/* ===== Linha 3: Tabela (Firestore) ===== */}
       <div className="grid cols-12">
         <div className="span-7">
-          <DataTable rows={rowsDb} />
+          <DataTable rows={rowsDb.slice(-6)} />
         </div>
-        <div className="span-5">
+        {/* <div className="span-5">
           <div className="panel">
             <h3>Consumo de Água por Planta</h3>
             <p className="muted">
@@ -225,7 +227,7 @@ export default function App() {
               implementar depois.
             </p>
           </div>
-        </div>
+        </div> */}
       </div>
 
       {/* ===== Banner/Toast de nível d'água baixo ===== */}
