@@ -1,4 +1,3 @@
-// src/components/StatusTiles.jsx
 export default function StatusTiles({ tempAmbiente, umidadeSolo, luzRaw, bombaOn, waterPct }) {
   const waterIsLow = Number.isFinite(Number(waterPct)) && Number(waterPct) < 5;
 
