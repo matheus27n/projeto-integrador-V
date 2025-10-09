@@ -14,7 +14,7 @@ export async function getTelemetry(): Promise<EspData> {
   return r.json();
 }
 
-export async function calibrate(type: "sd" | "sw" | "ld" | "ll") {
+export async function calibrate(type: "sd" | "sw" | "ld" | "ll" | "we" | "wf" | "save" | "load" | "reset" | "show") {
   const r = await fetch(`${BASE}/cal?type=${type}`);
   if (!r.ok) throw new Error("Falha ao calibrar");
   return r.text();

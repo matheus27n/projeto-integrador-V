@@ -1,11 +1,11 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <DHT.h>
-#include <Preferences.h>   // <<< persistência em NVS
+#include <Preferences.h>   // persistência em NVS
 
-/* ===== Wi-Fi ===== */
-const char* WIFI_SSID = "Apto.202";
-const char* WIFI_PASS = "27112000";
+/* ===== Wi-Fi (STA) ===== */
+const char* WIFI_SSID = "Redmi";
+const char* WIFI_PASS = "12345678";
 
 /* ===== Pinos (ADC1 funciona com Wi-Fi) ===== */
 const int PIN_SOIL   = 34;   // Umidade do solo (ADC1)
@@ -24,7 +24,6 @@ int SOIL_DRY  = 4095;
 int SOIL_WET  = 1200;
 int LDR_DARK  = 381;
 int LDR_LIGHT = 737;
-
 // Nível d'água
 int WATER_EMPTY = 300;
 int WATER_FULL  = 2200;
@@ -75,14 +74,14 @@ float lastTemp=NAN, lastHum=NAN; unsigned long lastDhtMs=0;
 
 /* ===== Parâmetros de decisão ===== */
 const int WATER_MIN_PCT = 5;     // fail-safe
-const int SOIL_ON_TH    = 30;    // histerese: liga ≤30% umidade do solo
-const int SOIL_OFF_TH   = 40;    // histerese: desliga ≥40%
-const int PUMP_MAX_MS   = 20000; // teto de segurança (20 s)
+const int SOIL_ON_TH    = 30;    // liga ≤30% umidade do solo
+const int SOIL_OFF_TH   = 40;    // desliga ≥40%
+const int PUMP_MAX_MS   = 20000; // teto segurança
 
 /* ===== Estado da bomba ===== */
-bool pump_on = false;     // estado atual
-int  pump_ms_sug = 0;     // último tempo sugerido (ms)
-int  rule_id     = 0;     // regra dominante (1..8)
+bool pump_on = false;
+int  pump_ms_sug = 0;
+int  rule_id     = 0;
 
 /* ===== Avaliador Sugeno 0-ordem (R1..R8) ===== */
 int ruleSugenoMs(uint8_t dry_low, uint8_t dry_med, uint8_t dry_high,
@@ -138,11 +137,12 @@ const char INDEX_HTML[] PROGMEM = R"HTML(
   <li>/data</li>
   <li>/cal?type=sd|sw|ld|ll|we|wf</li>
   <li>/cal?save | /cal?load | /cal?reset | /cal?show</li>
+  <li>/net</li>
 </ul>
 )HTML";
 void handleIndex(){ sendCORS(); server.send_P(200,"text/html",INDEX_HTML); }
 
-/* ===== Persistência: salvar/carregar/resetar ===== */
+/* ===== Persistência ===== */
 void saveCalToNVS(){
   prefs.begin(NVS_NS, false);
   prefs.putInt("SOIL_DRY",  SOIL_DRY);
@@ -155,7 +155,7 @@ void saveCalToNVS(){
 }
 bool loadCalFromNVS(){
   prefs.begin(NVS_NS, true);
-  bool has = prefs.isKey("SOIL_DRY");  // usa uma chave como “sentinela”
+  bool has = prefs.isKey("SOIL_DRY");
   if (has){
     SOIL_DRY   = prefs.getInt("SOIL_DRY",  SOIL_DRY);
     SOIL_WET   = prefs.getInt("SOIL_WET",  SOIL_WET);
@@ -173,9 +173,41 @@ void resetCalNVS(){
   prefs.end();
 }
 
+/* ===== AP+STA helpers ===== */
+void printNetInfo(const char* tag) {
+  Serial.printf("[%s]  STA IP:%s  GW:%s  MASK:%s  RSSI:%d\n", tag,
+    WiFi.localIP().toString().c_str(),
+    WiFi.gatewayIP().toString().c_str(),
+    WiFi.subnetMask().toString().c_str(),
+    WiFi.RSSI());
+  Serial.printf("[%s]  AP  IP:%s  CH:%d  Clients:%d\n", tag,
+    WiFi.softAPIP().toString().c_str(),
+    WiFi.channel(),
+    WiFi.softAPgetStationNum());
+}
+void startSoftAP() {
+  WiFi.mode(WIFI_AP_STA);                 // mantém STA + AP
+  const char* AP_SSID = "IrrigacaoESP";   // troque se quiser
+  const char* AP_PASS = "12345678";       // troque se quiser
+  bool ok = WiFi.softAP(AP_SSID, AP_PASS);
+  IPAddress apIP = WiFi.softAPIP();
+  Serial.printf("AP %s (%s) %s  IP:%s\n",
+    AP_SSID, AP_PASS, ok ? "UP" : "FAIL", apIP.toString().c_str());
+}
+
+/* ===== /net (diagnóstico de rede) ===== */
+void handleNet(){
+  char b[256];
+  snprintf(b,sizeof(b),
+    "{\"sta_ip\":\"%s\",\"ap_ip\":\"%s\",\"clients\":%d}",
+    WiFi.localIP().toString().c_str(),
+    WiFi.softAPIP().toString().c_str(),
+    WiFi.softAPgetStationNum());
+  sendCORS(); server.send(200,"application/json",b);
+}
+
 /* ===== /data ===== */
 void handleData(){
-  // Solo e Luz (raw + %)
   int soilRaw = readAvg(PIN_SOIL);
   int ldrRaw  = readAvg(PIN_LDR);
 
@@ -231,10 +263,8 @@ void handleData(){
     if (soilPct >= SOIL_OFF_TH || !water_ok) pump_on = false;
   }
 
-  // Saída física (indicativa – pode ligar um LED no GPIO26)
   digitalWrite(PUMP_PIN, pump_on ? HIGH : LOW);
 
-  // JSON
   char buf[1100];
   snprintf(buf,sizeof(buf),
     "{"
@@ -259,7 +289,6 @@ void handleData(){
 void handleCal(){
   String t = server.hasArg("type")?server.arg("type"):"";
 
-  // calibrações “rápidas” por leitura atual
   if      (t=="sd") SOIL_DRY    = readAvg(PIN_SOIL);
   else if (t=="sw") SOIL_WET    = readAvg(PIN_SOIL);
   else if (t=="ld") LDR_DARK    = readAvg(PIN_LDR);
@@ -267,7 +296,6 @@ void handleCal(){
   else if (t=="we") WATER_EMPTY = readAvg(PIN_WATER);
   else if (t=="wf") WATER_FULL  = readAvg(PIN_WATER);
 
-  // persistência
   else if (t=="save"){ saveCalToNVS(); sendCORS(); server.send(200,"text/plain","SAVED"); return; }
   else if (t=="load"){ bool ok=loadCalFromNVS();  sendCORS(); server.send(200,"text/plain", ok?"LOADED":"NO_DATA"); return; }
   else if (t=="reset"){ resetCalNVS();            sendCORS(); server.send(200,"text/plain","RESET"); return; }
@@ -296,27 +324,40 @@ void setup(){
   pinMode(PUMP_PIN, OUTPUT);
   digitalWrite(PUMP_PIN, LOW);
 
-  // carrega calibração da flash (se existir)
   bool loaded = loadCalFromNVS();
   Serial.printf("Calib loaded from NVS? %s\n", loaded ? "YES" : "NO");
 
+  // --- Wi-Fi: STA (Redmi) + AP (fallback) ---
   WiFi.mode(WIFI_STA);
   Serial.printf("Conectando a '%s'...\n", WIFI_SSID);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
-  uint32_t t0=millis();
-  while(WiFi.status()!=WL_CONNECTED && millis()-t0<15000){ delay(300); Serial.print('.'); }
-  Serial.println();
-  if(WiFi.status()==WL_CONNECTED){ Serial.print("IP: "); Serial.println(WiFi.localIP()); }
 
+  uint32_t t0=millis();
+  while(WiFi.status()!=WL_CONNECTED && millis()-t0<12000){ delay(300); Serial.print('.'); }
+  Serial.println();
+  if(WiFi.status()==WL_CONNECTED){
+    Serial.print("STA IP: "); Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("STA falhou (tempo excedido).");
+  }
+
+  // Sobe o AP sempre (modo AP+STA)
+  WiFi.mode(WIFI_AP_STA);
+  startSoftAP();
+  printNetInfo("NET");
+
+  // --- HTTP ---
   server.on("/",            HTTP_GET,      [](){ sendCORS(); server.send_P(200,"text/html",INDEX_HTML); });
   server.on("/data",        HTTP_GET,      handleData);
   server.on("/cal",         HTTP_GET,      handleCal);
+  server.on("/net",         HTTP_GET,      handleNet);
 
   server.on("/data",        HTTP_OPTIONS,  handleOptions);
   server.on("/cal",         HTTP_OPTIONS,  handleOptions);
+  server.on("/net",         HTTP_OPTIONS,  handleOptions);
 
   server.begin();
-  Serial.println("HTTP server: /, /data, /cal");
+  Serial.println("HTTP server: /, /data, /cal, /net");
 }
 
 void loop(){ server.handleClient(); }

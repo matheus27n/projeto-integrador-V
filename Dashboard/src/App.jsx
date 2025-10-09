@@ -25,9 +25,10 @@ import StatusTiles from "./components/StatusTiles";
 
 // ESP32 tempo real (apenas para tiles/notificações)
 import { useEspTelemetry } from "./hooks/useEspTelemetry";
+import { calibrate } from "./api/esp"; // Importar a função de calibração
 
 const MAX_POINTS_DB = 200;
-const WATER_MIN_PCT = 5; // limiar para alerta
+const WATER_MIN_PCT = 15; // limiar para alerta
 
 export default function App() {
   const [deviceId, setDeviceId] = useState("esp32-01");
@@ -44,8 +45,12 @@ export default function App() {
 
   const tempAmbiente = esp?.temp_c ?? 0;
   const luzRaw = esp?.ldr_raw ?? 0;
-  const bombaOnLive = false; // envie no JSON do ESP para refletir aqui, se quiser
+  const bombaOnLive = !!esp?.pump_on; // envie no JSON do ESP para refletir aqui, se quiser
   const waterNowPct = typeof esp?.water_pct === "number" ? esp.water_pct : null;
+
+  // opcional: tempo sugerido e regra dominante para mostrar em algum lugar:
+const pumpMsSug = esp?.pump_ms_sug ?? 0;
+const regraId   = esp?.rule_id ?? 0;
 
   // ===== Toast/Banner de nível d'água baixo (<5%)
   const [lowLevelToast, setLowLevelToast] = useState(false);
@@ -57,6 +62,8 @@ export default function App() {
     const lastOk = lastWaterOkRef.current;
     // dispara quando cruza de OK -> LOW
     if (lastOk && !ok) setLowLevelToast(true);
+    // fecha quando cruza de LOW -> OK
+    else if (!lastOk && ok) setLowLevelToast(false);
     lastWaterOkRef.current = ok;
   }, [waterNowPct]);
 
@@ -142,6 +149,24 @@ export default function App() {
     }
   }
 
+  // ===== 4) Calibração dos sensores =====
+  const [calibrating, setCalibrating] = useState(false);
+  const [calibMessage, setCalibMessage] = useState(null); // { type: 'success' | 'error', text: '...' }
+
+  async function handleCalibrate(type) {
+    setCalibrating(true);
+    setCalibMessage(null);
+    try {
+      const res = await calibrate(type);
+      setCalibMessage({ type: "success", text: `Calibração '${type}' realizada: ${res}` });
+    } catch (e) {
+      console.error("Erro na calibração:", e);
+      setCalibMessage({ type: "error", text: `Falha na calibração '${type}': ${e.message}` });
+    } finally {
+      setCalibrating(false);
+    }
+  }
+
   return (
     <Layout
       deviceId={deviceId}
@@ -214,20 +239,41 @@ export default function App() {
         </div>
       </div>
 
-      {/* ===== Linha 3: Tabela (Firestore) ===== */}
+      {/* ===== Linha 3: Tabela (Firestore) + Botões de Calibração ===== */}
       <div className="grid cols-12">
-        <div className="span-7">
+        <div className="span-8">
           <DataTable rows={rowsDb.slice(-6)} />
         </div>
-        {/* <div className="span-5">
+        <div className="span-4">
           <div className="panel">
-            <h3>Consumo de Água por Planta</h3>
+            <h3>Calibração dos Sensores</h3>
             <p className="muted">
-              Gráfico de pizza opcional (somatório por perfil/planta). Podemos
-              implementar depois.
+              Clique para calibrar os sensores ou gerenciar as configurações.
             </p>
+            <div className="button-group">
+              <h4>Solo</h4>
+              <button onClick={() => handleCalibrate("sd")} disabled={calibrating}>Solo Seco</button>
+              <button onClick={() => handleCalibrate("sw")} disabled={calibrating}>Solo Molhado</button>
+              <h4>Luz</h4>
+              <button onClick={() => handleCalibrate("ld")} disabled={calibrating}>Luz Escuro</button>
+              <button onClick={() => handleCalibrate("ll")} disabled={calibrating}>Luz Sol</button>
+              <h4>Água</h4>
+              <button onClick={() => handleCalibrate("we")} disabled={calibrating}>Água Vazia</button>
+              <button onClick={() => handleCalibrate("wf")} disabled={calibrating}>Água Cheia</button>
+              <div className="panel-sep" />
+              <h4>Configurações</h4>
+              <button onClick={() => handleCalibrate("save")} disabled={calibrating}>Salvar</button>
+              <button onClick={() => handleCalibrate("load")} disabled={calibrating}>Carregar</button>
+              <button onClick={() => handleCalibrate("reset")} disabled={calibrating}>Resetar</button>
+              <button onClick={() => handleCalibrate("show")} disabled={calibrating}>Mostrar (JSON)</button>
+            </div>
+            {calibMessage && (
+              <p style={{ color: calibMessage.type === "error" ? "#f87171" : "#a7f3d0", marginTop: "10px" }}>
+                {calibMessage.text}
+              </p>
+            )}
           </div>
-        </div> */}
+        </div>
       </div>
 
       {/* ===== Banner/Toast de nível d'água baixo ===== */}
@@ -236,6 +282,14 @@ export default function App() {
         title="Nível de água baixo"
         message={`Reservatório em ${waterNowPct ?? "—"}%. Reabasteça para evitar falhas na irrigação.`}
         onClose={() => setLowLevelToast(false)}
+      />
+      {/* Toast para mensagens de calibração */}
+      <Toast
+        show={!!calibMessage}
+        title={calibMessage?.type === "success" ? "Sucesso" : "Erro"}
+        message={calibMessage?.text}
+        onClose={() => setCalibMessage(null)}
+        type={calibMessage?.type}
       />
     </Layout>
   );

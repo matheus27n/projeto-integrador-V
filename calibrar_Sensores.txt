@@ -1,0 +1,43 @@
+//CALIBRAÇÃO DOS SENSORES 
+
+Como usar (rotas rápidas)
+
+Calibrar pela situação atual (sem salvar ainda):
+
+Solo seco: /cal?type=sd
+
+Solo molhado: /cal?type=sw
+
+Luz “escuro”: /cal?type=ld
+
+Luz “sol”: /cal?type=ll
+
+Água vazia: /cal?type=we
+
+Água cheia: /cal?type=wf
+
+Salvar esses valores na flash (persistente):
+
+/cal?type=save
+
+Carregar da flash (ex.: depois de reiniciar):
+
+/cal?type=load
+
+Resetar para os defaults do código:
+
+/cal?type=reset
+
+Inspecionar a calibração atual (JSON):
+
+/cal?type=show
+
+Dica de fluxo no dia a dia:
+
+Calibre todos (sd/sw/ld/ll/we/wf) → abra /cal?type=save.
+
+Reiniciou o ESP? Ele carrega automaticamente do NVS no setup() (não precisa chamar nada).
+
+Se quiser conferir, acesse /cal?type=show.
+
+Se quiser, eu também te passo a atualização do App.jsx para mostrar em “Notificações” os valores de calibração atuais (via /cal?type=show) — mas para o funcionamento do dashboard que você já tem, não é necessário.
