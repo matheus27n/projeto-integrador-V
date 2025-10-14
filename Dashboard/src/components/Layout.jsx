@@ -1,3 +1,4 @@
+import logoImg from "./data/ioterra.png";
 export default function Layout({
   children,
   deviceId,
@@ -5,19 +6,34 @@ export default function Layout({
   onSeed,
   onPublish,
   publishLoading,
+  activeMenu,
+  setActiveMenu,
 }) {
+
+  const menuItems = [
+    { key: "dashboard", label: "Dashboard" },
+    { key: "catalogo", label: "Catálogo de Plantas" },
+    { key: "historico", label: "Histórico" },
+    { key: "configuracoes", label: "Configurações" },
+    { key: "relatorios", label: "Relatórios" },
+  ];
+
   return (
     <div className="app">
       <aside className="sidebar">
         <div className="brand">
-          <div className="logo" />
-          <span>Irrigador automático IoT</span>
+          <img src={logoImg} alt="Logo" className="logo" />
         </div>
         <nav className="nav">
-          <div className="item active">Dashboard</div>
-          <div className="item">Histórico</div>
-          <div className="item">Configurações</div>
-          <div className="item">Relatórios</div>
+          {menuItems.map(item => (
+            <div
+              key={item.key}
+              className={`item ${activeMenu === item.key ? "active" : ""}`}
+              onClick={() => setActiveMenu(item.key)}
+            >
+              {item.label}
+            </div>
+          ))}
         </nav>
       </aside>
 
