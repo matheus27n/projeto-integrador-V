@@ -2,7 +2,9 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 import Toast from "./components/Toast";
 import WaterPie from "./components/WaterPie";
-
+import LogoImp from "./components/data/import.png";
+import LogoEdit from "./components/data/edit.png";
+import LogoDel from "./components/data/remove.png";
 
 // Firestore
 import { db } from "./firebase";
@@ -22,17 +24,41 @@ import AreaHistory from "./components/AreaHistory";
 import DataTable from "./components/DataTable";
 import StatusPanel from "./components/StatusPanel";
 import StatusTiles from "./components/StatusTiles";
+import VisualizePerfil from "./components/VisualizePerfil";
 
-// ESP32 tempo real (apenas para tiles/notificações)
 import { useEspTelemetry } from "./hooks/useEspTelemetry";
+import { calibrate } from "./api/esp";
 
 const MAX_POINTS_DB = 200;
-const WATER_MIN_PCT = 5; // limiar para alerta
+const WATER_MIN_PCT = 15; 
 
 export default function App() {
   const [deviceId, setDeviceId] = useState("esp32-01");
+  const [activeMenu, setActiveMenu] = useState("dashboard");
+  const [selectedPerfil,setSelectedPerfil] = useState(null);
+  const [sliderValues, setSliderValues] = useState({
+    soil_min: 0,
+    soil_maximun: 100,
+    light_min: 0,
+    light_max: 100,
+    water_min: 15,
+    bomb_time: 0,
+    freq: 0,
+  });
+  const [editing, setEditing] = useState(null); 
+  const [editForm, setEditForm] = useState({
+    nome: "",
+    umidade_min_pct: 0,
+    umidade_max_pct: 0,
+    luz_min: 0,
+    luz_max: 100,
+    agua_min_pct: 15,
+    tempo_bomba_ms: 1000,
+    intervalo_horas: 24,
+  });
+  const [culturas, setCulturas] = useState([]);
+  const [importedCultura, setImportedCultura] = useState(null);
 
-  // ===== 1) ESP32 tempo real — somente tiles/notificações
   const { data: esp, error: espError } = useEspTelemetry();
   const SOIL_MAX = 4095;
 
@@ -44,10 +70,12 @@ export default function App() {
 
   const tempAmbiente = esp?.temp_c ?? 0;
   const luzRaw = esp?.ldr_raw ?? 0;
-  const bombaOnLive = false; // envie no JSON do ESP para refletir aqui, se quiser
+  const bombaOnLive = !!esp?.pump_on; 
   const waterNowPct = typeof esp?.water_pct === "number" ? esp.water_pct : null;
 
-  // ===== Toast/Banner de nível d'água baixo (<5%)
+const pumpMsSug = esp?.pump_ms_sug ?? 0;
+const regraId   = esp?.rule_id ?? 0;
+
   const [lowLevelToast, setLowLevelToast] = useState(false);
   const lastWaterOkRef = useRef(true);
 
@@ -55,12 +83,11 @@ export default function App() {
     if (waterNowPct == null) return;
     const ok = waterNowPct >= WATER_MIN_PCT;
     const lastOk = lastWaterOkRef.current;
-    // dispara quando cruza de OK -> LOW
     if (lastOk && !ok) setLowLevelToast(true);
+    else if (!lastOk && ok) setLowLevelToast(false);
     lastWaterOkRef.current = ok;
   }, [waterNowPct]);
 
-  // ===== 2) Firestore — histórico e tabela (irrigação OU publicação manual)
   const [rowsDb, setRowsDb] = useState([]);
 
   useEffect(() => {
@@ -73,7 +100,6 @@ export default function App() {
       snap.forEach((doc) => {
         const d = doc.data();
 
-        // Mostrar: quando a bomba ligou OU quando foi uma publicação manual
         const consider =
           d.pump_state === "ON" || (d.pump_ms ?? 0) > 0 || d.source === "manual";
         if (!consider) return;
@@ -81,7 +107,7 @@ export default function App() {
         arr.push({
           id: doc.id,
           ts: d.ts?.toDate ? d.ts.toDate() : new Date(d.ts),
-          soil: Number(d.soil_raw ?? d.soil ?? 0), // mantém raw no gráfico
+          soil: Number(d.soil_raw ?? d.soil ?? 0), 
           tempC: Number(d.temp_c ?? 0),
           humAir: Number(d.hum_air ?? 0),
           light: Number(d.light_raw ?? d.light ?? 0),
@@ -91,7 +117,7 @@ export default function App() {
           source: d.source ?? null,
         });
       });
-      setRowsDb(arr.reverse()); // cronológico crescente
+      setRowsDb(arr.reverse()); 
     });
 
     return () => unsub();
@@ -99,7 +125,6 @@ export default function App() {
 
   const latestDb = rowsDb.at(-1);
 
-  // ===== 3) Publicar manualmente a leitura atual do ESP =====
   const [publishing, setPublishing] = useState(false);
   const lastPubRef = useRef(0);
 
@@ -110,14 +135,13 @@ export default function App() {
     }
     if (publishing) return;
 
-    // cooldown simples (evita spam acidental)
     if (Date.now() - lastPubRef.current < 2000) return;
 
     setPublishing(true);
     try {
       const col = collection(db, "devices", deviceId, "measurements");
       const payload = {
-        ts: serverTimestamp(), // timestamp do servidor
+        ts: serverTimestamp(), 
         soil_raw: Math.round(esp.soil_raw ?? 0),
         soil_pct: Math.round(esp.soil_pct ?? soilPctLive),
         temp_c: Number(esp.temp_c ?? 0),
@@ -128,7 +152,6 @@ export default function App() {
         pump_ms: 0,
         rule_id: 0,
 
-        // etiqueta para aparecer no histórico mesmo sem irrigação
         source: "manual",
       };
       const ref = await addDoc(col, payload);
@@ -142,6 +165,189 @@ export default function App() {
     }
   }
 
+  const [calibrating, setCalibrating] = useState(false);
+  const [calibMessage, setCalibMessage] = useState(null); 
+
+  async function handleCalibrate(type) {
+    setCalibrating(true);
+    setCalibMessage(null);
+
+    try {
+      let resultMessage = "";
+
+      switch (type) {
+        case "add": {
+          const novaCultura = {
+            nome: "Nova Cultura",
+            kc: 0,
+            etc_media: 0,
+            lamina_agua: 0, 
+            intervalo_horas: sliderValues.freq,
+            umidade_min_pct: sliderValues.soil_min,
+            umidade_max_pct: sliderValues.soil_maximun,
+            luz_min: sliderValues.light_min,
+            luz_max: sliderValues.light_max,
+            tempo_bomba_ms: sliderValues.bomb_time * 1000, 
+            agua_min_pct: sliderValues.water_min,
+            observacoes: "",
+          };
+
+          setCulturas((prev) => [...prev, novaCultura]);
+          resultMessage = "Nova cultura adicionada ao catálogo com os valores atuais dos sliders.";
+          break;
+        }
+
+        case "save": {
+          const blob = new Blob([JSON.stringify(culturas, null, 2)], {
+            type: "application/json",
+          });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = "catalogo_culturas.json";
+          a.click();
+          resultMessage = "Catálogo salvo como arquivo JSON.";
+          break;
+        }
+        case "load": {
+          const input = document.createElement("input");
+          input.type = "file";
+          input.accept = ".json";
+
+          input.onchange = async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const text = await file.text();
+            const json = JSON.parse(text);
+
+            if (Array.isArray(json)) {
+              setCulturas(json);
+              setImportedCultura(null); 
+              setCalibMessage({ type: "success"});
+            } else {
+              setImportedCultura(json); 
+              setCulturas(prev => [...prev, json]); 
+              setCalibMessage({ type: "success"});
+            }
+          };
+          input.click();
+          return; 
+        }
+        case "reset": {
+          setCulturas([]);
+          setImportedCultura(null);
+          setSliderValues({
+            soil_min: 0,
+            soil_maximun: 100,
+            light_min: 0,
+            light_max: 100,
+            water_min: 15,
+            bomb_time: 0,
+            freq: 0,
+          });
+          resultMessage = "Catálogo e sliders foram resetados.";
+          break;
+        }
+        default:
+          throw new Error(`Tipo de calibração desconhecido: ${type}`);
+      }
+
+      setCalibMessage({ type: "success", text: resultMessage });
+    } catch (e) {
+      console.error("Erro na calibração:", e);
+      setCalibMessage({
+        type: "error",
+        text: `Falha na ação '${type}': ${e.message}`,
+      });
+    } finally {
+      setCalibrating(false);
+    }
+  }
+
+  async function handleImport(cultura){
+    setSliderValues({
+      soil_min: cultura.umidade_min_pct,
+      soil_maximun: cultura.umidade_max_pct,
+      light_min: cultura.luz_min ?? 0,      
+      light_max: cultura.luz_max ?? 100,   
+      water_min: cultura.agua_min_pct,
+      bomb_time: cultura.tempo_bomba_ms / 1000,
+      freq: cultura.intervalo_horas
+    });
+    setImportedCultura(cultura);
+  }
+
+  async function handleEdit(cultura) {
+    setEditing(cultura);
+    setEditForm({
+      nome: cultura.nome,
+      kc: cultura.kc ?? 1.0,
+      etc_media: cultura.etc_media ?? 1.0,
+      lamina_agua: cultura.lamina_agua ?? 1.0,
+      umidade_min_pct: cultura.umidade_min_pct,
+      umidade_max_pct: cultura.umidade_max_pct,
+      luz_min: cultura.luz_min ?? 0,
+      luz_max: cultura.luz_max ?? 100,
+      agua_min_pct: cultura.agua_min_pct,
+      tempo_bomba_ms: cultura.tempo_bomba_ms,
+      intervalo_horas: cultura.intervalo_horas,
+      observacoes: cultura.observacoes ?? "",
+    });
+  }
+
+
+  async function handleSaveEdit() {
+    setCulturas((prev) =>
+      prev.map((c) => (c === editing ? { ...c, ...editForm } : c))
+    );
+
+    setRowsDb((prev) =>
+      prev.map((row) =>
+        row.id === editing.id ? { ...row, ...editForm } : row
+      )
+    );
+
+    if (importedCultura === editing) {
+      setSliderValues({
+        soil_min: editForm.umidade_min_pct,
+        soil_maximun: editForm.umidade_max_pct,
+        light_min: editForm.luz_min,
+        light_max: editForm.luz_max,
+        water_min: editForm.agua_min_pct,
+        bomb_time: editForm.tempo_bomba_ms / 1000,
+        freq: editForm.intervalo_horas,
+      });
+      setImportedCultura({ ...importedCultura, ...editForm });
+    }
+
+    setEditing(null);
+    setCalibMessage({ type: "success", text: `Cultura "${editForm.nome}" atualizada.` });
+  }
+
+  async function handleDelete(cultura) {
+    if (confirm(`Deseja realmente remover "${cultura.nome}"?`)) {
+      setCulturas((prev) => prev.filter((c) => c !== cultura));
+
+      setRowsDb((prev) => prev.filter((row) => row.id !== cultura.id));
+
+      if (importedCultura === cultura) {
+        setImportedCultura(null);
+        setSliderValues({
+          soil_min: 0,
+          soil_maximun: 100,
+          light_min: 0,
+          light_max: 100,
+          water_min: 15, 
+          bomb_time: 0,
+          freq: 0,
+        });
+      }
+
+      setCalibMessage({ type: "success", text: `Cultura "${cultura.nome}" removida.` });
+    }
+  }
+
   return (
     <Layout
       deviceId={deviceId}
@@ -149,86 +355,472 @@ export default function App() {
       onPublish={publishNow}
       publishLoading={publishing}
       onSeed={() => {}}
+      activeMenu={activeMenu}          
+      setActiveMenu={setActiveMenu}    
     >
-      {/* ===== Linha 1: Gráfico (Firestore) + Painel direito ===== */}
-      <div className="grid cols-12">
-        <div className="span-8">
-          <AreaHistory rows={rowsDb} title="Histórico de Umidade do Solo (raw)" />
+      {activeMenu === "dashboard" &&(
+        <>
+          {/* ===== Linha 1: Gráfico (Firestore) + Painel direito ===== */}
+          <div className="grid cols-12">
+            <div className="span-8">
+              <AreaHistory rows={rowsDb} title="Histórico de Umidade do Solo (raw)" />
+            </div>
+
+            <div className="span-4">
+              <div className="panel">
+                <h3>Notificações</h3>
+                <ul className="notif">
+                  <li>
+                    Conexão: <b>{espError ? "OFFLINE" : "ONLINE"}</b>
+                    {espError && <span style={{ color: "#f87171" }}> — {espError}</span>}
+                  </li>
+                  <li>Último evento registrado: {latestDb ? latestDb.ts.toLocaleString() : "—"}</li>
+                  <li>Umidade do ar (últ): {latestDb ? Math.round(latestDb.humAir) : "—"}%</li>
+                  <li>
+                    Nível da água (agora):{" "}
+                    <b
+                      style={{
+                        color:
+                          waterNowPct != null && waterNowPct < WATER_MIN_PCT
+                            ? "#f87171"
+                            : "#e6edf5",
+                      }}
+                    >
+                      {waterNowPct != null ? `${waterNowPct}%` : "—"}
+                    </b>
+                  </li>
+                </ul>
+
+                <div className="panel-sep" />
+                <h3 style={{ marginTop: 8 }}>Status</h3>
+                <StatusPanel
+                  deviceId={deviceId}
+                  perfil="Rosa"
+                  local="Sala"
+                  pumpOn={latestDb?.pump ?? false}
+                  lastTs={latestDb?.ts}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* ===== Linha 2: Tiles (tempo real do ESP32) ===== */}
+          <div className="grid cols-12">
+            <div className="span-12">
+              <StatusTiles
+                tempAmbiente={tempAmbiente}
+                umidadeSolo={soilPctLive}
+                luzRaw={luzRaw}
+                bombaOn={bombaOnLive}
+                waterPct={waterNowPct}
+              />
+            </div>
+          </div>
+
+          <div className="grid cols-12">
+              {/* Tabela Firestore */}
+              <div className="span-8">
+                <DataTable rows={rowsDb.slice(-10)} />
+              </div>
+
+              {/* Painel de Calibração */}
+              <div className="span-4">
+                <div className="panel">
+                  <h3>Calibração dos Sensores</h3>
+                  <p className="muted">
+                    Ajuste os valores dos sensores manualmente usando os sliders abaixo.
+                  </p>
+
+                  {/* Sliders */}
+                  <div className="slider-group">
+                    <h4>Umidade Mínima do Solo: {sliderValues.soil_min}%</h4>
+                    <input
+                      type="range"
+                      min={0}
+                      max={sliderValues.soil_maximun}
+                      value={sliderValues.soil_min}
+                      onChange={(e) =>
+                        setSliderValues((prev) => ({ ...prev, soil_min: Number(e.target.value) }))
+                      }
+                      style={{
+                        width: "80%",
+                        height: "12px",
+                        borderRadius: "6px",
+                        outline: "none",
+                        background: `linear-gradient(to right, #3b82f6 0%, #3b82f6 ${
+                          (sliderValues.soil_min / sliderValues.soil_maximun) * 100
+                        }%, #e6edf5 ${(sliderValues.soil_min / sliderValues.soil_maximun) * 100}%, #e6edf5 100%)`,
+                      }}
+                    />
+
+                    <h4>Umidade Máxima do Solo: {sliderValues.soil_maximun}%</h4>
+                    <input
+                      type="range"
+                      min={sliderValues.soil_min}
+                      max={100}
+                      value={sliderValues.soil_maximun}
+                      onChange={(e) =>
+                        setSliderValues((prev) => ({ ...prev, soil_maximun: Number(e.target.value) }))
+                      }
+                      style={{
+                        width: "80%",
+                        height: "12px",
+                        borderRadius: "6px",
+                        outline: "none",
+                        background: `linear-gradient(to right, #3b82f6 0%, #3b82f6 ${
+                          ((sliderValues.soil_maximun - sliderValues.soil_min) / (100 - sliderValues.soil_min)) * 100
+                        }%, #e6edf5 ${((sliderValues.soil_maximun - sliderValues.soil_min) / (100 - sliderValues.soil_min)) * 100}%, #e6edf5 100%)`,
+                      }}
+                    />
+
+                    <h4>Luz mínima permitida: {sliderValues.light_min}%</h4>
+                    <input
+                      type="range"
+                      min={0}
+                      max={sliderValues.light_max}
+                      value={sliderValues.light_min}
+                      onChange={(e) =>
+                        setSliderValues((prev) => ({ ...prev, light_min: Number(e.target.value) }))
+                      }
+                      style={{
+                        width: "80%",
+                        height: "12px",
+                        borderRadius: "6px",
+                        outline: "none",
+                        background: `linear-gradient(to right, #3b82f6 0%, #3b82f6 ${
+                          (sliderValues.light_min / sliderValues.light_max) * 100
+                        }%, #e6edf5 ${(sliderValues.light_min / sliderValues.light_max) * 100}%, #e6edf5 100%)`,
+                      }}
+                    />
+
+                    <h4>Luz máxima permitida: {sliderValues.light_max}%</h4>
+                    <input
+                      type="range"
+                      min={sliderValues.light_min}
+                      max={100}
+                      value={sliderValues.light_max}
+                      onChange={(e) =>
+                        setSliderValues((prev) => ({ ...prev, light_max: Number(e.target.value) }))
+                      }
+                      style={{
+                        width: "80%",
+                        height: "12px",
+                        borderRadius: "6px",
+                        outline: "none",
+                        background: `linear-gradient(to right, #3b82f6 0%, #3b82f6 ${
+                          ((sliderValues.light_max - sliderValues.light_min) / (100 - sliderValues.light_min)) * 100
+                        }%, #e6edf5 ${((sliderValues.light_max - sliderValues.light_min) / (100 - sliderValues.light_min)) * 100}%, #e6edf5 100%)`,
+                      }}
+                    />
+
+                    <h4>Nível mínimo da água do reservatório: {sliderValues.water_min}%</h4>
+                    <input
+                      type="range"
+                      min={15}
+                      max={50}
+                      value={sliderValues.water_min}
+                      onChange={(e) =>
+                        setSliderValues((prev) => ({ ...prev, water_min: Number(e.target.value) }))
+                      }
+                      style={{
+                        width: "80%",
+                        height: "12px",
+                        borderRadius: "6px",
+                        outline: "none",
+                        background: `linear-gradient(to right, #3b82f6 0%, #3b82f6 ${
+                          ((sliderValues.water_min - 15) / (50 - 15)) * 100
+                        }%, #e6edf5 ${((sliderValues.water_min - 15) / (50 - 15)) * 100}%, #e6edf5 100%)`,
+                      }}
+                    />
+
+                    <h4>Tempo de funcionamento da bomba: {sliderValues.bomb_time}s</h4>
+                    <input
+                      type="range"
+                      min={0}
+                      max={120}
+                      value={sliderValues.bomb_time}
+                      onChange={(e) =>
+                        setSliderValues((prev) => ({ ...prev, bomb_time: Number(e.target.value) }))
+                      }
+                      style={{
+                        width: "80%",
+                        height: "12px",
+                        borderRadius: "6px",
+                        outline: "none",
+                        background: `linear-gradient(to right, #3b82f6 0%, #3b82f6 ${
+                          ((sliderValues.bomb_time) / 120) * 100
+                        }%, #e6edf5 ${((sliderValues.bomb_time) / 120) * 100}%, #e6edf5 100%)`,
+                      }}
+                    />
+                    
+                    <h4>Intervalo de irrigação: {sliderValues.freq}h</h4>
+                    <input
+                      type="range"
+                      min={0}
+                      max={168}
+                      value={sliderValues.freq}
+                      onChange={(e) =>
+                        setSliderValues((prev) => ({ ...prev, freq: Number(e.target.value) }))
+                      }
+                      style={{
+                        width: "80%",
+                        height: "12px",
+                        borderRadius: "6px",
+                        outline: "none",
+                        background: `linear-gradient(to right, #3b82f6 0%, #3b82f6 ${
+                          ((sliderValues.freq) / 168) * 100
+                        }%, #e6edf5 ${((sliderValues.freq) / 168) * 100}%, #e6edf5 100%)`,
+                      }}
+                    />
+                  </div>
+
+
+                  {/* Botões de calibração */}
+                  <div className="button-group">
+                    <h4>Ações</h4>
+                    <button onClick={() => handleCalibrate("add")} disabled={calibrating}>
+                      Adicionar no catálogo
+                    </button>
+                    <button onClick={() => handleCalibrate("save")} disabled={calibrating}>
+                      Salvar catálogo
+                    </button>
+                    <button onClick={() => handleCalibrate("load")} disabled={calibrating}>
+                      Carregar catálogo
+                    </button>
+                    <button onClick={() => handleCalibrate("reset")} disabled={calibrating}>
+                      Limpar catálogo
+                    </button>
+                  </div>
+
+                  {/* Mensagem de calibração */}
+                  {calibMessage && (
+                    <p
+                      style={{
+                        color: calibMessage.type === "error" ? "#f87171" : "#a7f3d0",
+                        marginTop: "10px",
+                      }}
+                    >
+                      {calibMessage.text}
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          </> 
+        )}
+      {activeMenu === "catalogo" && (
+      <div className="panel">
+        <h3>Catálogo de Plantas</h3>
+        <p className="muted" style={{ marginBottom: 12 }}>
+          Visualize os parâmetros cadastrados para cada cultura e importe o perfil desejado para o sistema.
+        </p>
+
+        <div style={{overflowX: "auto" }}>
+          <table className="perfil-table">
+            <thead>
+              <tr>
+                <th>Nome</th>
+                <th>Kc</th>
+                <th>ETc Média</th>
+                <th>Lâmina (L/m²/dia)</th>
+                <th>Umid. Mín (%)</th>
+                <th>Umid. Máx (%)</th>
+                <th>Luz Mín (%)</th>
+                <th>Luz Máx (%)</th>
+                <th>Tempo Bomba (s)</th>
+                <th>Intervalo (h)</th>
+                <th>Nível Mín. Água (%)</th>
+                <th>Observações</th>
+                <th className="center">Ações</th>
+              </tr>
+            </thead>
+
+            <tbody>
+              {culturas.map((cultura) => (
+                <tr key={cultura.nome}>
+                  <td className="bold">{cultura.nome}</td>
+                  <td>{cultura.kc}</td>
+                  <td>{cultura.etc_media}</td>
+                  <td>{cultura.lamina_agua}</td>
+                  <td>{cultura.umidade_min_pct}</td>
+                  <td>{cultura.umidade_max_pct}</td>
+                  <td>{cultura.luz_min}</td>
+                  <td>{cultura.luz_max}</td>
+                  <td>{cultura.tempo_bomba_ms / 1000}</td>
+                  <td>{cultura.intervalo_horas}</td>
+                  <td>{cultura.agua_min_pct}</td>
+                  <td className="muted italic">
+                    {cultura.observacoes || "—"}
+                  </td>
+                  <td className="center">
+                    <button className="edit-btn" onClick={() => handleEdit(cultura)}
+                    title="Clique para editar os parâmetros desta planta."
+                    >
+                      < img src={LogoEdit} style={{ width: "16px"}}/>
+                    </button>
+                    <button
+                      className="import-btn"
+                      onClick={() => handleImport(cultura)}
+                      title="Clique para importar os parâmetros desta planta."
+                    >
+                      <img src={LogoImp} style={{ width: "16px" }} />
+                    </button>
+                    <button className="delete-btn" onClick={() => handleDelete(cultura)}
+                      title="Clique para remover os parâmetros desta planta."
+                      >
+                        < img src={LogoDel} style={{ width: "16px"}}/>
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
+      </div>
+    )}
+    {editing && (
+        <div className="modal-overlay">
+          <div className="modal">
+            <h3>Editar Cultura: {editForm.nome}</h3>
 
-        <div className="span-4">
-          <div className="panel">
-            <h3>Notificações</h3>
-            <ul className="notif">
-              <li>
-                Conexão: <b>{espError ? "OFFLINE" : "ONLINE"}</b>
-                {espError && <span style={{ color: "#f87171" }}> — {espError}</span>}
-              </li>
-              <li>
-                Último evento registrado:{" "}
-                {latestDb ? latestDb.ts.toLocaleString() : "—"}
-              </li>
-              <li>
-                Umidade do ar (últ):{" "}
-                {latestDb ? Math.round(latestDb.humAir) : "—"}%
-              </li>
-              {/* Nível d'água em tempo real (não vai para o BD) */}
-              <li>
-                Nível da água (agora):{" "}
-                <b
-                  style={{
-                    color:
-                      waterNowPct != null && waterNowPct < WATER_MIN_PCT
-                        ? "#f87171"
-                        : "#e6edf5",
-                  }}
-                >
-                  {waterNowPct != null ? `${waterNowPct}%` : "—"}
-                </b>
-              </li>
-            </ul>
-
-            <div className="panel-sep" />
-            <h3 style={{ marginTop: 8 }}>Status</h3>
-            <StatusPanel
-              deviceId={deviceId}
-              perfil="Rosa"
-              local="Sala"
-              pumpOn={latestDb?.pump ?? false}
-              lastTs={latestDb?.ts}
+            <label>Nome</label>
+            <input
+              type="text"
+              value={editForm.nome}
+              onChange={(e) => setEditForm({ ...editForm, nome: e.target.value })}
             />
+
+            <label>Kc</label>
+            <input
+              type="number"
+              step="0.01"
+              value={editForm.kc}
+              min={0}
+              onChange={(e) => setEditForm({ ...editForm, kc: Number(e.target.value) })}
+            />
+
+            <label>ETc Média</label>
+            <input
+              type="number"
+              step="0.01"
+              value={editForm.etc_media}
+              min={0}
+              onChange={(e) => setEditForm({ ...editForm, etc_media: Number(e.target.value) })}
+            />
+
+            <label>Lâmina de água (L/m²/dia)</label>
+            <input
+              type="number"
+              step="0.01"
+              value={editForm.lamina_agua}
+              min={0}
+              onChange={(e) => setEditForm({ ...editForm, lamina_agua: Number(e.target.value) })}
+            />
+
+            <label>Umidade mínima (%)</label>
+            <input
+              type="number"
+              value={editForm.umidade_min_pct}
+              min={0}
+              max={editForm.umidade_max_pct}
+              onChange={(e) => {
+                const val = Number(e.target.value);
+                if (val >= 0 && val <= editForm.umidade_max_pct)
+                  setEditForm({ ...editForm, umidade_min_pct: val });
+              }}
+            />
+
+            <label>Umidade máxima (%)</label>
+            <input
+              type="number"
+              value={editForm.umidade_max_pct}
+              min={editForm.umidade_min_pct}
+              max={100}
+              onChange={(e) => {
+                const val = Number(e.target.value);
+                if (val >= editForm.umidade_min_pct && val <= 100)
+                  setEditForm({ ...editForm, umidade_max_pct: val });
+              }}
+            />
+
+            <label>Luz mínima (%)</label>
+            <input
+              type="number"
+              value={editForm.luz_min}
+              min={0}
+              max={editForm.luz_max}
+              onChange={(e) => {
+                const val = Number(e.target.value);
+                if (val >= 0 && val <= editForm.luz_max)
+                  setEditForm({ ...editForm, luz_min: val });
+              }}
+            />
+
+            <label>Luz máxima (%)</label>
+            <input
+              type="number"
+              value={editForm.luz_max}
+              min={editForm.luz_min}
+              max={100}
+              onChange={(e) => {
+                const val = Number(e.target.value);
+                if (val >= editForm.luz_min && val <= 100)
+                  setEditForm({ ...editForm, luz_max: val });
+              }}
+            />
+
+            <label>Água mínima (%)</label>
+            <input
+              type="number"
+              value={editForm.agua_min_pct}
+              min={15}
+              max={50}
+              onChange={(e) => {
+                const val = Number(e.target.value);
+                if (val >= 15 && val <= 50)
+                  setEditForm({ ...editForm, agua_min_pct: val });
+              }}
+            />
+
+            <label>Tempo da bomba (s)</label>
+            <input
+              type="number"
+              value={editForm.tempo_bomba_ms}
+              min={0}
+              max={120}
+              onChange={(e) => {
+                const val = Number(e.target.value);
+                if (val >= 0 && val <= 120)
+                  setEditForm({ ...editForm, tempo_bomba_ms: val });
+              }}
+            />
+
+            <label>Intervalo de irrigação (h)</label>
+            <input
+              type="number"
+              value={editForm.intervalo_horas}
+              min={0}
+              max={168}
+              onChange={(e) => {
+                const val = Number(e.target.value);
+                if (val >= 0 && val <= 168)
+                  setEditForm({ ...editForm, intervalo_horas: val });
+              }}
+            />
+
+            <label>Observações</label>
+            <textarea
+              value={editForm.observacoes}
+              onChange={(e) => setEditForm({ ...editForm, observacoes: e.target.value })}
+            />
+
+            <div className="modal-actions">
+              <button onClick={handleSaveEdit}>Salvar</button>
+              <button onClick={() => setEditing(null)}>Cancelar</button>
+            </div>
           </div>
         </div>
-      </div>
-
-      {/* ===== Linha 2: Tiles (tempo real do ESP32) ===== */}
-      <div className="grid cols-12">
-        <div className="span-12">
-          <StatusTiles
-            tempAmbiente={tempAmbiente}
-            umidadeSolo={soilPctLive}
-            luzRaw={luzRaw}
-            bombaOn={bombaOnLive}
-            waterPct={waterNowPct}  // <<< novo tile de nível d'água
-          />
-        </div>
-      </div>
-
-      {/* ===== Linha 3: Tabela (Firestore) ===== */}
-      <div className="grid cols-12">
-        <div className="span-7">
-          <DataTable rows={rowsDb.slice(-6)} />
-        </div>
-        {/* <div className="span-5">
-          <div className="panel">
-            <h3>Consumo de Água por Planta</h3>
-            <p className="muted">
-              Gráfico de pizza opcional (somatório por perfil/planta). Podemos
-              implementar depois.
-            </p>
-          </div>
-        </div> */}
-      </div>
+      )}
 
       {/* ===== Banner/Toast de nível d'água baixo ===== */}
       <Toast
@@ -237,6 +829,29 @@ export default function App() {
         message={`Reservatório em ${waterNowPct ?? "—"}%. Reabasteça para evitar falhas na irrigação.`}
         onClose={() => setLowLevelToast(false)}
       />
+      {/* Toast para mensagens de calibração */}
+      <Toast
+        show={!!calibMessage}
+        title={calibMessage?.type === "success" ? "Sucesso" : "Erro"}
+        message={calibMessage?.text}
+        onClose={() => setCalibMessage(null)}
+        type={calibMessage?.type}
+      />
+      {activeMenu === "historico" && (
+        <div className="panel">
+          <h3>Histórico</h3>
+        </div>
+      )}
+      {activeMenu === "configuracoes" && (
+        <div className="panel">
+          <h3>Configurações</h3>
+        </div>
+      )}
+      {activeMenu === "relatorios" && (
+        <div className="panel">
+          <h3>Relatórios</h3>
+        </div>
+      )}
     </Layout>
   );
 }
