@@ -56,6 +56,9 @@ const regraId   = esp?.rule_id ?? 0;
   const [lowLevelToast, setLowLevelToast] = useState(false);
   const lastWaterOkRef = useRef(true);
 
+  // ===== Registro automático da bomba
+  const lastPumpOnRef = useRef(false);
+
   useEffect(() => {
     if (waterNowPct == null) return;
     const ok = waterNowPct >= WATER_MIN_PCT;
@@ -103,6 +106,45 @@ const regraId   = esp?.rule_id ?? 0;
 
     return () => unsub();
   }, [deviceId]);
+
+  // ===== 3.1) Publicar automaticamente quando a bomba ligar =====
+  useEffect(() => {
+    if (!esp) return;
+    const currentPumpOn = !!esp.pump_on;
+    const lastPumpOn = lastPumpOnRef.current;
+
+    // Dispara quando a bomba liga (transição de OFF para ON)
+    if (!lastPumpOn && currentPumpOn) {
+      publishAutomatico();
+    }
+    lastPumpOnRef.current = currentPumpOn;
+  }, [esp]);
+
+  async function publishAutomatico() {
+    if (!esp) return; // Não deve acontecer aqui, mas para segurança
+
+    try {
+      const col = collection(db, "devices", deviceId, "measurements");
+      const payload = {
+        ts: serverTimestamp(), // timestamp do servidor
+        soil_raw: Math.round(esp.soil_raw ?? 0),
+        soil_pct: Math.round(esp.soil_pct ?? soilPctLive),
+        temp_c: Number(esp.temp_c ?? 0),
+        hum_air: Math.round(esp.humid ?? 0),
+        light_raw: Math.round(esp.ldr_raw ?? 0),
+
+        pump_state: "ON", // Sempre ON para registro automático
+        pump_ms: esp.pump_ms_sug ?? 0, // Usar o tempo sugerido pelo ESP
+        rule_id: esp.rule_id ?? 0, // Usar a regra dominante do ESP
+
+        source: "automatico",
+      };
+      const ref = await addDoc(col, payload);
+      console.log("Publicado AUTOMATICO docId:", ref.id, payload);
+    } catch (e) {
+      console.error("Falha ao publicar leitura automática:", e);
+    }
+  }
 
   const latestDb = rowsDb.at(-1);
 

@@ -74,9 +74,9 @@ uint8_t tri_mu(uint8_t x, uint8_t a, uint8_t b, uint8_t c){
 float lastTemp=NAN, lastHum=NAN; unsigned long lastDhtMs=0;
 
 /* ===== Parâmetros de decisão ===== */
-const int WATER_MIN_PCT = 5;     // fail-safe
-const int SOIL_ON_TH    = 30;    // histerese: liga ≤30% umidade do solo
-const int SOIL_OFF_TH   = 40;    // histerese: desliga ≥40%
+const int WATER_MIN_PCT = 15;    // fail-safe
+const int SOIL_ON_TH    = 65;    // histerese: liga ≤65% umidade do solo
+const int SOIL_OFF_TH   = 70;    // histerese: desliga ≥70%
 const int PUMP_MAX_MS   = 20000; // teto de segurança (20 s)
 
 /* ===== Estado da bomba ===== */
