@@ -155,7 +155,7 @@ void saveCalToNVS(){
 }
 bool loadCalFromNVS(){
   prefs.begin(NVS_NS, true);
-  bool has = prefs.isKey("SOIL_DRY");  // usa uma chave como “sentinela”
+  bool has = prefs.isKey("SOIL_DRY");  // usa uma chave 
   if (has){
     SOIL_DRY   = prefs.getInt("SOIL_DRY",  SOIL_DRY);
     SOIL_WET   = prefs.getInt("SOIL_WET",  SOIL_WET);

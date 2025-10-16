@@ -35,9 +35,3 @@ Inspecionar a calibração atual (JSON):
 Dica de fluxo no dia a dia:
 
 Calibre todos (sd/sw/ld/ll/we/wf) → abra /cal?type=save.
-
-Reiniciou o ESP? Ele carrega automaticamente do NVS no setup() (não precisa chamar nada).
-
-Se quiser conferir, acesse /cal?type=show.
-
-Se quiser, eu também te passo a atualização do App.jsx para mostrar em “Notificações” os valores de calibração atuais (via /cal?type=show) — mas para o funcionamento do dashboard que você já tem, não é necessário.
