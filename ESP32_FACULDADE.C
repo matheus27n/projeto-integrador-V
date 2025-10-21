@@ -1,57 +1,78 @@
+
 #include <WiFi.h>
 #include <WebServer.h>
 #include <DHT.h>
-#include <Preferences.h>   // persistência em NVS
+#include <Preferences.h>
 
-/* ===== Wi-Fi (STA) ===== */
-const char* WIFI_SSID = "Redmi";
-const char* WIFI_PASS = "12345678";
+/* ======================== CONFIG Wi-Fi ======================== */
+// AP local (sempre habilitado como fallback):
+const char* AP_SSID   = "IrrigacaoESP";
+const char* AP_PASS   = "12345678";
+//http://192.168.4.1
 
-/* ===== Pinos (ADC1 funciona com Wi-Fi) ===== */
-const int PIN_SOIL   = 34;   // Umidade do solo (ADC1)
-const int PIN_LDR    = 35;   // LDR (ADC1)
+// Tempo máximo tentando conectar na STA antes de desistir (ms)
+const uint32_t STA_TIMEOUT_MS = 15000;
+
+/* ======================== PINAGEM ======================== */
+const int PIN_SOIL   = 34;   // ADC1 (umidade do solo)
+const int PIN_LDR    = 35;   // ADC1 (LDR)
 const int PIN_DHT    = 22;   // DHT22
-const int PIN_WATER  = 39;   // Nível d'água (ADC1)
-const int PUMP_PIN   = 26;   // Saída da "bomba" (simulada no GPIO)
+const int PIN_WATER  = 39;   // ADC1 (nível d'água)
+const int PUMP_PIN   = 26;   // IN2 do relé (ativo-baixo)
 
-/* ===== DHT ===== */
+/* ======================== DHT ======================== */
 #define DHTTYPE DHT22
 DHT dht(PIN_DHT, DHTTYPE);
 
-/* ===== Calibração (defaults) ===== */
-// Solo / LDR
-int SOIL_DRY  = 4095;
-int SOIL_WET  = 1200;
-int LDR_DARK  = 381;
-int LDR_LIGHT = 737;
-// Nível d'água
+/* ======================== Calibração (defaults) ======================== */
+// Solo / LDR (ajustados por leitura atual usando /cal?type=...)
+int SOIL_DRY  = 4095;  // solo totalmente seco (raw)
+int SOIL_WET  = 1200;  // solo molhado (raw)
+int LDR_DARK  = 381;   // luz mínima (raw)
+int LDR_LIGHT = 737;   // luz máxima (raw)
+
+// Nível d'água (raw)
 int WATER_EMPTY = 300;
 int WATER_FULL  = 2200;
 
-/* ===== ADC ===== */
-const float VREF = 3.3f;
+/* ======================== ADC ======================== */
+const float VREF   = 3.3f;
 const int   ADCMAX = 4095;
 
-/* ===== Servidor ===== */
+/* ======================== Servidor HTTP ======================== */
 WebServer server(80);
 
-/* ===== NVS (Preferences) ===== */
+/* ======================== NVS (Preferences) ======================== */
 Preferences prefs;
-const char* NVS_NS = "calib";  // namespace na flash
+const char* NVS_NS = "calib";
 
-/* ===== Helpers ===== */
+/* ======================== Estados/Parâmetros de decisão ======================== */
+// Fail-safe e histerese (consistentes com seu dashboard)
+const int WATER_MIN_PCT = 15;     // mínimo de água no reservatório
+const int SOIL_ON_TH    = 65;     // liga a bomba quando solo ≤ 65%
+const int SOIL_OFF_TH   = 70;     // desliga quando solo ≥ 70%
+const int PUMP_MAX_MS   = 20000;  // teto de segurança (20 s)
+
+bool pump_on = false;             // estado lógico da bomba (desejado)
+int  pump_ms_sug = 0;             // saída do Sugeno
+int  rule_id     = 0;             // regra dominante (1..8)
+
+/* ---------- watchdog de acionamento manual temporizado ---------- */
+unsigned long pump_until_ms = 0;  // quando >0, indica que deve desligar em tal instante
+
+/* ======================== Helpers – leitura/escala ======================== */
 int readAvg(int pin, uint8_t n=16){
   uint32_t acc=0; for(uint8_t i=0;i<n;i++){ acc += analogRead(pin); delay(2); }
   return acc / n;
 }
 float rawToV(int raw){ return (raw * VREF) / ADCMAX; }
 
-// Média móvel exponencial p/ suavizar nível d'água
+// Filtro EMA para estabilizar nível d'água
 int emaInt(int prev, int curr, uint8_t alpha_percent = 25){
   return ( (int)prev*(100-alpha_percent) + (int)curr*alpha_percent ) / 100;
 }
 
-// Mapeamento 0..100% respeitando direção (full pode ser < empty)
+// Converte raw para 0..100% respeitando direção (full pode ser < empty)
 int mapPctSmart(int raw, int emptyRef, int fullRef){
   if (fullRef == emptyRef) return 0;
   long pct;
@@ -61,7 +82,8 @@ int mapPctSmart(int raw, int emptyRef, int fullRef){
   return (int)pct;
 }
 
-/* ===== Fuzzy – pertinências triangulares (0..255) ===== */
+/* ======================== Fuzzy – pertinências triangulares ======================== */
+// Retorna pertinência (0..255) para triangular (a-b-c)
 uint8_t tri_mu(uint8_t x, uint8_t a, uint8_t b, uint8_t c){
   if (x<=a || x>=c) return 0;
   if (x==b) return 255;
@@ -69,21 +91,11 @@ uint8_t tri_mu(uint8_t x, uint8_t a, uint8_t b, uint8_t c){
   return (uint8_t)(((int)x - a) * 255 / ((int)b - a));
 }
 
-/* ===== DHT cache ===== */
-float lastTemp=NAN, lastHum=NAN; unsigned long lastDhtMs=0;
+/* ======================== DHT cache ======================== */
+float lastTemp=NAN, lastHum=NAN; 
+unsigned long lastDhtMs=0;
 
-/* ===== Parâmetros de decisão ===== */
-const int WATER_MIN_PCT = 15;    // fail-safe
-const int SOIL_ON_TH    = 65;    // liga ≤65% umidade do solo
-const int SOIL_OFF_TH   = 70;    // desliga ≥70%
-const int PUMP_MAX_MS   = 20000; // teto segurança
-
-/* ===== Estado da bomba ===== */
-bool pump_on = false;
-int  pump_ms_sug = 0;
-int  rule_id     = 0;
-
-/* ===== Avaliador Sugeno 0-ordem (R1..R8) ===== */
+/* ======================== Sugeno 0-ordem ======================== */
 int ruleSugenoMs(uint8_t dry_low, uint8_t dry_med, uint8_t dry_high,
                  uint8_t t_frio, uint8_t t_agrad, uint8_t t_quente,
                  uint8_t l_escuro, uint8_t l_nublado, uint8_t l_sol,
@@ -108,6 +120,7 @@ int ruleSugenoMs(uint8_t dry_low, uint8_t dry_med, uint8_t dry_high,
     (uint32_t)w5*R5 + (uint32_t)w6*R6 + (uint32_t)w7*R7 + (uint32_t)w8*R8;
   uint32_t den = (uint32_t)w1 + w2 + w3 + w4 + w5 + w6 + w7 + w8;
 
+  // regra dominante (debug)
   uint8_t ws[8]={w1,w2,w3,w4,w5,w6,w7,w8};
   int     ms[8]={R1,R2,R3,R4,R5,R6,R7,R8};
   uint8_t maxw=0; int rid=0;
@@ -121,7 +134,13 @@ int ruleSugenoMs(uint8_t dry_low, uint8_t dry_med, uint8_t dry_high,
   return sug;
 }
 
-/* ===== CORS ===== */
+/* ======================== Relé – helpers (ATIVO-BAIXO) ======================== */
+// LOW  -> energiza relé -> fecha NO->COM -> liga bomba
+// HIGH -> desenergiza     -> abre NO->COM  -> desliga bomba
+inline void relayOn()  { digitalWrite(PUMP_PIN, LOW);  }
+inline void relayOff() { digitalWrite(PUMP_PIN, HIGH); }
+
+/* ======================== CORS (dashboard web) ======================== */
 void sendCORS(){
   server.sendHeader("Access-Control-Allow-Origin", "*");
   server.sendHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
@@ -129,7 +148,7 @@ void sendCORS(){
 }
 void handleOptions(){ sendCORS(); server.send(204); }
 
-/* ===== Página simples ===== */
+/* ======================== Página simples (índice) ======================== */
 const char INDEX_HTML[] PROGMEM = R"HTML(
 <!doctype html><meta charset="utf-8"/><title>ESP32</title>
 <p>Endpoints:</p>
@@ -137,12 +156,13 @@ const char INDEX_HTML[] PROGMEM = R"HTML(
   <li>/data</li>
   <li>/cal?type=sd|sw|ld|ll|we|wf</li>
   <li>/cal?save | /cal?load | /cal?reset | /cal?show</li>
+  <li>/pump?on=1|0&ms=5000</li>
   <li>/net</li>
 </ul>
 )HTML";
 void handleIndex(){ sendCORS(); server.send_P(200,"text/html",INDEX_HTML); }
 
-/* ===== Persistência ===== */
+/* ======================== Persistência (NVS) ======================== */
 void saveCalToNVS(){
   prefs.begin(NVS_NS, false);
   prefs.putInt("SOIL_DRY",  SOIL_DRY);
@@ -155,7 +175,7 @@ void saveCalToNVS(){
 }
 bool loadCalFromNVS(){
   prefs.begin(NVS_NS, true);
-  bool has = prefs.isKey("SOIL_DRY");
+  bool has = prefs.isKey("SOIL_DRY");  
   if (has){
     SOIL_DRY   = prefs.getInt("SOIL_DRY",  SOIL_DRY);
     SOIL_WET   = prefs.getInt("SOIL_WET",  SOIL_WET);
@@ -173,29 +193,7 @@ void resetCalNVS(){
   prefs.end();
 }
 
-/* ===== AP+STA helpers ===== */
-void printNetInfo(const char* tag) {
-  Serial.printf("[%s]  STA IP:%s  GW:%s  MASK:%s  RSSI:%d\n", tag,
-    WiFi.localIP().toString().c_str(),
-    WiFi.gatewayIP().toString().c_str(),
-    WiFi.subnetMask().toString().c_str(),
-    WiFi.RSSI());
-  Serial.printf("[%s]  AP  IP:%s  CH:%d  Clients:%d\n", tag,
-    WiFi.softAPIP().toString().c_str(),
-    WiFi.channel(),
-    WiFi.softAPgetStationNum());
-}
-void startSoftAP() {
-  WiFi.mode(WIFI_AP_STA);                 // mantém STA + AP
-  const char* AP_SSID = "IrrigacaoESP";   // troque se quiser
-  const char* AP_PASS = "12345678";       // troque se quiser
-  bool ok = WiFi.softAP(AP_SSID, AP_PASS);
-  IPAddress apIP = WiFi.softAPIP();
-  Serial.printf("AP %s (%s) %s  IP:%s\n",
-    AP_SSID, AP_PASS, ok ? "UP" : "FAIL", apIP.toString().c_str());
-}
-
-/* ===== /net (diagnóstico de rede) ===== */
+/* ======================== /net – diagnóstico de rede ======================== */
 void handleNet(){
   char b[256];
   snprintf(b,sizeof(b),
@@ -206,18 +204,17 @@ void handleNet(){
   sendCORS(); server.send(200,"application/json",b);
 }
 
-/* ===== /data ===== */
+/* ======================== /data – leitura + decisão ======================== */
 void handleData(){
-  int soilRaw = readAvg(PIN_SOIL);
-  int ldrRaw  = readAvg(PIN_LDR);
+  // Solo/LDR (raw + tensões + %)
+  int   soilRaw = readAvg(PIN_SOIL);
+  int   ldrRaw  = readAvg(PIN_LDR);
+  float soilV   = rawToV(soilRaw);
+  float ldrV    = rawToV(ldrRaw);
+  int   soilPct = mapPctSmart(soilRaw, SOIL_DRY, SOIL_WET);
+  int   ldrPct  = mapPctSmart(ldrRaw,  LDR_DARK, LDR_LIGHT);
 
-  float soilV = rawToV(soilRaw);
-  float ldrV  = rawToV(ldrRaw);
-
-  int soilPct = mapPctSmart(soilRaw, SOIL_DRY, SOIL_WET);   // 0..100 (umidade)
-  int ldrPct  = mapPctSmart(ldrRaw,  LDR_DARK, LDR_LIGHT);  // 0..100 (luz)
-
-  // DHT (cache 2 s)
+  // DHT com cache (2 s) – evita travar o loop
   bool dhtOk=false;
   if (millis()-lastDhtMs>=2000){
     float h=dht.readHumidity(), t=dht.readTemperature();
@@ -225,14 +222,14 @@ void handleData(){
     lastDhtMs=millis();
   } else if(!isnan(lastHum)&&!isnan(lastTemp)) dhtOk=true;
 
-  // Nível d'água (EMA + %)
+  // Nível d'água com EMA
   static int waterRawEma = 0;
   int   waterRaw = readAvg(PIN_WATER, 24);
   waterRawEma    = emaInt(waterRawEma, waterRaw, 25);
   float waterV   = rawToV(waterRawEma);
   int   waterPct = mapPctSmart(waterRawEma, WATER_EMPTY, WATER_FULL);
 
-  // Fuzzy
+  // Fuzzy – pertinências (mesmas do seu projeto)
   uint8_t dry = (uint8_t)constrain(100 - soilPct, 0, 100);
   uint8_t t   = (uint8_t)constrain((int)round(dhtOk? lastTemp : 25.0f), 0, 50);
   uint8_t lz  = (uint8_t)constrain(ldrPct, 0, 100);
@@ -240,11 +237,9 @@ void handleData(){
   uint8_t dry_low  = tri_mu(dry, 0,10,30);
   uint8_t dry_med  = tri_mu(dry, 35,50,65);
   uint8_t dry_high = tri_mu(dry, 70,90,100);
-
   uint8_t t_frio   = tri_mu(t, 0,10,15);
   uint8_t t_agrad  = tri_mu(t, 18,23,28);
   uint8_t t_quente = tri_mu(t, 28,35,45);
-
   uint8_t l_escuro = tri_mu(lz, 0,5,15);
   uint8_t l_nubl   = tri_mu(lz, 40,50,60);
   uint8_t l_sol    = tri_mu(lz, 70,85,100);
@@ -255,7 +250,7 @@ void handleData(){
                              l_escuro,l_nubl,l_sol,
                              rule_id);
 
-  // Histerese + fail-safe água
+  // Histerese + fail-safe
   bool water_ok = (waterPct >= WATER_MIN_PCT);
   if (!pump_on) {
     if (soilPct <= SOIL_ON_TH && water_ok) pump_on = true;
@@ -263,9 +258,17 @@ void handleData(){
     if (soilPct >= SOIL_OFF_TH || !water_ok) pump_on = false;
   }
 
-  digitalWrite(PUMP_PIN, pump_on ? HIGH : LOW);
+  // Watchdog do /pump?ms=xxxxx
+  if (pump_until_ms && millis() >= pump_until_ms) {
+    pump_until_ms = 0;
+    pump_on = false;
+  }
 
-  char buf[1100];
+  // Saída física (ativo-baixo)
+  if (pump_on) relayOn(); else relayOff();
+
+  // Resposta JSON
+  char buf[1150];
   snprintf(buf,sizeof(buf),
     "{"
       "\"soil_raw\":%d,\"soil_v\":%.3f,\"soil_pct\":%d,\"soil_dry\":%d,\"soil_wet\":%d,"
@@ -285,10 +288,11 @@ void handleData(){
   sendCORS(); server.send(200,"application/json",buf);
 }
 
-/* ===== /cal ===== */
+/* ======================== /cal – calibração + NVS ======================== */
 void handleCal(){
   String t = server.hasArg("type")?server.arg("type"):"";
 
+  // Calibra “pela leitura atual”
   if      (t=="sd") SOIL_DRY    = readAvg(PIN_SOIL);
   else if (t=="sw") SOIL_WET    = readAvg(PIN_SOIL);
   else if (t=="ld") LDR_DARK    = readAvg(PIN_LDR);
@@ -296,6 +300,7 @@ void handleCal(){
   else if (t=="we") WATER_EMPTY = readAvg(PIN_WATER);
   else if (t=="wf") WATER_FULL  = readAvg(PIN_WATER);
 
+  // Persistência
   else if (t=="save"){ saveCalToNVS(); sendCORS(); server.send(200,"text/plain","SAVED"); return; }
   else if (t=="load"){ bool ok=loadCalFromNVS();  sendCORS(); server.send(200,"text/plain", ok?"LOADED":"NO_DATA"); return; }
   else if (t=="reset"){ resetCalNVS();            sendCORS(); server.send(200,"text/plain","RESET"); return; }
@@ -312,52 +317,102 @@ void handleCal(){
   sendCORS(); server.send(200,"text/plain","OK");
 }
 
-/* ===== setup/loop ===== */
+/* ======================== /pump – acionamento manual ======================== */
+// Ex.: /pump?on=1&ms=5000   -> liga por 5 s (auto-desliga)
+//     /pump?on=0           -> desliga agora
+void handlePump(){
+  bool on = server.hasArg("on") && server.arg("on")=="1";
+
+  if (on){
+    // tempo opcional (ms) com teto de segurança
+    int ms = server.hasArg("ms") ? server.arg("ms").toInt() : PUMP_MAX_MS;
+    if (ms < 0) ms = 0;
+    if (ms > PUMP_MAX_MS) ms = PUMP_MAX_MS;
+
+    pump_on = true;
+    pump_until_ms = (ms>0 ? millis() + (unsigned long)ms : 0);
+    relayOn();
+    sendCORS(); server.send(200,"text/plain","ON");
+  } else {
+    pump_on = false;
+    pump_until_ms = 0;
+    relayOff();
+    sendCORS(); server.send(200,"text/plain","OFF");
+  }
+}
+
+/* ======================== Wi-Fi (STA + AP fallback) ======================== */
+void startWiFi(){
+  // Tenta STA primeiro
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  Serial.printf("Conectando a '%s'...\n", WIFI_SSID);
+
+  uint32_t t0 = millis();
+  while (WiFi.status() != WL_CONNECTED && (millis()-t0) < STA_TIMEOUT_MS){
+    delay(300); Serial.print('.');
+  }
+  Serial.println();
+
+  if (WiFi.status()==WL_CONNECTED){
+    Serial.print("STA IP: "); Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("STA falhou (timeout).");
+  }
+
+  // Sobe AP em paralelo (fallback local)
+  WiFi.mode(WIFI_AP_STA);
+  bool ok = WiFi.softAP(AP_SSID, AP_PASS);
+  Serial.printf("AP %s (%s) %s  IP:%s\n",
+    AP_SSID, AP_PASS, ok ? "UP" : "FAIL", WiFi.softAPIP().toString().c_str());
+}
+
+/* ======================== setup/loop ======================== */
 void setup(){
   Serial.begin(115200); delay(200);
+
+  // ADC
   analogSetWidth(12);
   analogSetPinAttenuation(PIN_SOIL,  ADC_11db);
   analogSetPinAttenuation(PIN_LDR,   ADC_11db);
   analogSetPinAttenuation(PIN_WATER, ADC_11db);
+
+  // DHT
   dht.begin();
 
+  // Relé (garante desligado – ativo-baixo)
   pinMode(PUMP_PIN, OUTPUT);
-  digitalWrite(PUMP_PIN, LOW);
+  relayOff();
 
+  // Calibração da NVS (se já salva)
   bool loaded = loadCalFromNVS();
   Serial.printf("Calib loaded from NVS? %s\n", loaded ? "YES" : "NO");
 
-  // --- Wi-Fi: STA (Redmi) + AP (fallback) ---
-  WiFi.mode(WIFI_STA);
-  Serial.printf("Conectando a '%s'...\n", WIFI_SSID);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  // Wi-Fi AP+STA
+  startWiFi();
 
-  uint32_t t0=millis();
-  while(WiFi.status()!=WL_CONNECTED && millis()-t0<12000){ delay(300); Serial.print('.'); }
-  Serial.println();
-  if(WiFi.status()==WL_CONNECTED){
-    Serial.print("STA IP: "); Serial.println(WiFi.localIP());
-  } else {
-    Serial.println("STA falhou (tempo excedido).");
-  }
-
-  // Sobe o AP sempre (modo AP+STA)
-  WiFi.mode(WIFI_AP_STA);
-  startSoftAP();
-  printNetInfo("NET");
-
-  // --- HTTP ---
+  // Rotas HTTP
   server.on("/",            HTTP_GET,      [](){ sendCORS(); server.send_P(200,"text/html",INDEX_HTML); });
   server.on("/data",        HTTP_GET,      handleData);
   server.on("/cal",         HTTP_GET,      handleCal);
+  server.on("/pump",        HTTP_GET,      handlePump);
   server.on("/net",         HTTP_GET,      handleNet);
 
   server.on("/data",        HTTP_OPTIONS,  handleOptions);
   server.on("/cal",         HTTP_OPTIONS,  handleOptions);
+  server.on("/pump",        HTTP_OPTIONS,  handleOptions);
   server.on("/net",         HTTP_OPTIONS,  handleOptions);
 
   server.begin();
-  Serial.println("HTTP server: /, /data, /cal, /net");
+  Serial.println("HTTP server: /, /data, /cal, /pump, /net");
 }
 
-void loop(){ server.handleClient(); }
+void loop(){
+  // watchdog de tempo programado no /pump
+  if (pump_until_ms && millis() >= pump_until_ms){
+    pump_until_ms = 0;
+    pump_on = false;
+    relayOff();
+  }
+  server.handleClient();
+}
