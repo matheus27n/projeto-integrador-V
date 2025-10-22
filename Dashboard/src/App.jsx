@@ -426,9 +426,9 @@ const regraId   = esp?.rule_id ?? 0;
               {/* Painel de Calibração */}
               <div className="span-4">
                 <div className="panel">
-                  <h3>Calibração dos Sensores</h3>
+                  <h3>Visualizar parâmetros de irrigação</h3>
                   <p className="muted">
-                    Ajuste os valores dos sensores manualmente usando os sliders abaixo.
+                    Visualize os valores dos parâmetros de irrigação que estão sendo aplicados no sistema.
                   </p>
 
                   {/* Sliders */}
