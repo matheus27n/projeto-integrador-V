@@ -1,0 +1,26 @@
+[
+  {
+    "id": 1,
+    "data_hora": "21/10/2025, 16:16:26",
+    "fonte": "useEspTelemetry",
+    "descricao": "Não foi possível conectar ao ESP32. Verifique se ele está ligado e na mesma rede Wi-Fi."
+  },
+  {
+    "id": 2,
+    "data_hora": "22/10/2025. 01:38:13",
+    "fonte": "useEspTelemetry",
+    "descricao": "Não foi possível conectar ao ESP32. Verifique se ele está ligado e na mesma rede Wi-Fi."
+  },
+  {
+    "id": 3,
+    "data_hora": "22/10/2025. 20:11:02",
+    "fonte": "handleCalibrate",
+    "descricao": "Falha de conexão ao calibrar 'sd'. Verifique a internet ou o dispositivo."
+  },
+  {
+    "id": 4,
+    "data_hora": "23/10/2025, 17:13:00",
+    "fonte": "useEspTelemetry",
+    "descricao": "Não foi possível conectar ao ESP32. Verifique se ele está ligado e na mesma rede Wi-Fi."
+  }
+]
