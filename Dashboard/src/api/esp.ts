@@ -9,12 +9,25 @@ export type EspData = {
 const BASE = import.meta.env.VITE_ESP_BASE_URL;
 
 export async function getTelemetry(): Promise<EspData> {
-  const r = await fetch(`${BASE}/data`, { cache: "no-store" });
-  if (!r.ok) throw new Error(`ESP32 offline (${r.status})`);
-  return r.json();
+  try {
+    const r = await fetch(`${BASE}/data`, { cache: "no-store" });
+    if (!r.ok) {
+      throw new Error(`ESP32 offline (${r.status})`);
+    }
+    const json = await r.json();
+    if (!json || typeof json !== "object" || json.soil_raw === undefined) {
+      throw new Error("Dados invalidos recebidos do ESP32");
+    }
+    return json;
+  } catch (err: any) {
+    const msg =
+      (err && err?.message) || "Erro desconhecido ao obter dados do ESP32";
+      console.warn("[getTelemetry] Falha ao obter dados do ESP:", msg);
+      throw new Error(msg);
+  }
 }
 
-export async function calibrate(type: "sd" | "sw" | "ld" | "ll") {
+export async function calibrate(type: "sd" | "sw" | "ld" | "ll" | "we" | "wf" | "save" | "load" | "reset" | "show") {
   const r = await fetch(`${BASE}/cal?type=${type}`);
   if (!r.ok) throw new Error("Falha ao calibrar");
   return r.text();
