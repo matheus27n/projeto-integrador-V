@@ -1,10 +1,11 @@
-
 import { useEffect, useMemo, useState, useRef } from "react";
 import Toast from "./components/Toast";
 import WaterPie from "./components/WaterPie";
 import LogoImp from "./components/data/import.png";
 import LogoEdit from "./components/data/edit.png";
 import LogoDel from "./components/data/remove.png";
+import culturasJson from "./components/data/catalogo_culturas.json";
+import log_errosJson from "./components/data/log_error.json";
 
 // Firestore
 import { db } from "./firebase";
@@ -35,7 +36,6 @@ const WATER_MIN_PCT = 15;
 export default function App() {
   const [deviceId, setDeviceId] = useState("esp32-01");
   const [activeMenu, setActiveMenu] = useState("dashboard");
-  const [selectedPerfil,setSelectedPerfil] = useState(null);
   const [sliderValues, setSliderValues] = useState({
     soil_min: 0,
     soil_maximun: 100,
@@ -56,8 +56,30 @@ export default function App() {
     tempo_bomba_ms: 1000,
     intervalo_horas: 24,
   });
+  const [log_error, setLogError] = useState([]);
+  useEffect(() => {
+    async function loadLog() {
+      try {
+        setLogError(log_errosJson);
+      } catch (e) {
+        console.error("Falha ao carregar log_error.json:", e);
+      }
+    }
+    loadLog();
+  }, []);
+
   const [culturas, setCulturas] = useState([]);
   const [importedCultura, setImportedCultura] = useState(null);
+  useEffect(() => {
+    async function loadCulturas (){
+      try{
+        setCulturas(culturasJson)
+      } catch (e) {
+        console.error("Falha ao carregar catalogo_culturas.json", e);
+      }
+    };
+    loadCulturas();
+  }, []);
 
   const { data: esp, error: espError } = useEspTelemetry();
   const SOIL_MAX = 4095;
@@ -129,40 +151,30 @@ const regraId   = esp?.rule_id ?? 0;
   const lastPubRef = useRef(0);
 
   async function publishNow() {
-    if (!esp) {
-      alert("Sem leitura do ESP no momento.");
-      return;
-    }
-    if (publishing) return;
+    if (!esp) return alert("Sem leitura do ESP no momento.");
 
-    if (Date.now() - lastPubRef.current < 2000) return;
+    if (publishing || Date.now() - lastPubRef.current < 2000) return;
 
     setPublishing(true);
-    try {
+    await safeExec("publishNow", async () => {
       const col = collection(db, "devices", deviceId, "measurements");
       const payload = {
-        ts: serverTimestamp(), 
+        ts: serverTimestamp(),
         soil_raw: Math.round(esp.soil_raw ?? 0),
         soil_pct: Math.round(esp.soil_pct ?? soilPctLive),
         temp_c: Number(esp.temp_c ?? 0),
         hum_air: Math.round(esp.humid ?? 0),
         light_raw: Math.round(esp.ldr_raw ?? 0),
-
         pump_state: bombaOnLive ? "ON" : "OFF",
         pump_ms: 0,
         rule_id: 0,
-
         source: "manual",
       };
       const ref = await addDoc(col, payload);
       lastPubRef.current = Date.now();
       console.log("Publicado docId:", ref.id, payload);
-    } catch (e) {
-      console.error(e);
-      alert("Falha ao publicar leitura.");
-    } finally {
-      setPublishing(false);
-    }
+    });
+    setPublishing(false);
   }
 
   const [calibrating, setCalibrating] = useState(false);
@@ -171,182 +183,84 @@ const regraId   = esp?.rule_id ?? 0;
   async function handleCalibrate(type) {
     setCalibrating(true);
     setCalibMessage(null);
-
     try {
-      let resultMessage = "";
-
-      switch (type) {
-        case "add": {
-          const novaCultura = {
-            nome: "Nova Cultura",
-            kc: 0,
-            etc_media: 0,
-            lamina_agua: 0, 
-            intervalo_horas: sliderValues.freq,
-            umidade_min_pct: sliderValues.soil_min,
-            umidade_max_pct: sliderValues.soil_maximun,
-            luz_min: sliderValues.light_min,
-            luz_max: sliderValues.light_max,
-            tempo_bomba_ms: sliderValues.bomb_time * 1000, 
-            agua_min_pct: sliderValues.water_min,
-            observacoes: "",
-          };
-
-          setCulturas((prev) => [...prev, novaCultura]);
-          resultMessage = "Nova cultura adicionada ao catálogo com os valores atuais dos sliders.";
-          break;
-        }
-
-        case "save": {
-          const blob = new Blob([JSON.stringify(culturas, null, 2)], {
-            type: "application/json",
-          });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = "catalogo_culturas.json";
-          a.click();
-          resultMessage = "Catálogo salvo como arquivo JSON.";
-          break;
-        }
-        case "load": {
-          const input = document.createElement("input");
-          input.type = "file";
-          input.accept = ".json";
-
-          input.onchange = async (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
-
-            const text = await file.text();
-            const json = JSON.parse(text);
-
-            if (Array.isArray(json)) {
-              setCulturas(json);
-              setImportedCultura(null); 
-              setCalibMessage({ type: "success"});
-            } else {
-              setImportedCultura(json); 
-              setCulturas(prev => [...prev, json]); 
-              setCalibMessage({ type: "success"});
-            }
-          };
-          input.click();
-          return; 
-        }
-        case "reset": {
-          setCulturas([]);
-          setImportedCultura(null);
-          setSliderValues({
-            soil_min: 0,
-            soil_maximun: 100,
-            light_min: 0,
-            light_max: 100,
-            water_min: 15,
-            bomb_time: 0,
-            freq: 0,
-          });
-          resultMessage = "Catálogo e sliders foram resetados.";
-          break;
-        }
-        default:
-          throw new Error(`Tipo de calibração desconhecido: ${type}`);
-      }
-
-      setCalibMessage({ type: "success", text: resultMessage });
+      if (!type) throw new Error("Tipo de calibração não especificado.");
+      const res = await calibrate(type);
+      setCalibMessage({ type: "success", text: `Calibração '${type}' realizada: ${res}` });
     } catch (e) {
       console.error("Erro na calibração:", e);
-      setCalibMessage({
-        type: "error",
-        text: `Falha na ação '${type}': ${e.message}`,
-      });
+      let userMsg;
+      const msg = e?.message || "Erro desconhecido";
+      if (msg.includes("network") || msg.includes("fetch")) {
+        userMsg = `Falha de conexão ao calibrar '${type}'. Verifique a internet ou o dispositivo.`;
+      } else if (msg.includes("timeout")) {
+        userMsg = `A calibração '${type}' demorou demais e foi interrompida.`;
+      } else if (msg.includes("não especificado")) {
+        userMsg = `Nenhum tipo de calibração foi informado.`;
+      } else {
+        userMsg = `Falha na calibração '${type}': ${msg}`;
+      }
+      setCalibMessage({ type: "error", text: userMsg });
+      try {
+        logErrorToState("handleCalibrate", userMsg, { type, rawError: msg });
+      } catch (err) {
+        console.error("Falha ao registrar log de calibração:", err);
+      }
     } finally {
       setCalibrating(false);
     }
   }
 
-  async function handleImport(cultura){
-    setSliderValues({
-      soil_min: cultura.umidade_min_pct,
-      soil_maximun: cultura.umidade_max_pct,
-      light_min: cultura.luz_min ?? 0,      
-      light_max: cultura.luz_max ?? 100,   
-      water_min: cultura.agua_min_pct,
-      bomb_time: cultura.tempo_bomba_ms / 1000,
-      freq: cultura.intervalo_horas
-    });
-    setImportedCultura(cultura);
+  async function safeExec(fonte, func) {
+    try {
+      await func();
+    } catch (e) {
+      logErrorToState(fonte, e.message, { stack: e.stack });
+      console.error(`Erro em ${fonte}:`, e);
+      alert(`Erro em ${fonte}: ${e.message}`);
+    }
   }
 
-  async function handleEdit(cultura) {
-    setEditing(cultura);
-    setEditForm({
-      nome: cultura.nome,
-      kc: cultura.kc ?? 1.0,
-      etc_media: cultura.etc_media ?? 1.0,
-      lamina_agua: cultura.lamina_agua ?? 1.0,
-      umidade_min_pct: cultura.umidade_min_pct,
-      umidade_max_pct: cultura.umidade_max_pct,
-      luz_min: cultura.luz_min ?? 0,
-      luz_max: cultura.luz_max ?? 100,
-      agua_min_pct: cultura.agua_min_pct,
-      tempo_bomba_ms: cultura.tempo_bomba_ms,
-      intervalo_horas: cultura.intervalo_horas,
-      observacoes: cultura.observacoes ?? "",
-    });
-  }
-
-
-  async function handleSaveEdit() {
-    setCulturas((prev) =>
-      prev.map((c) => (c === editing ? { ...c, ...editForm } : c))
-    );
-
-    setRowsDb((prev) =>
-      prev.map((row) =>
-        row.id === editing.id ? { ...row, ...editForm } : row
-      )
-    );
-
-    if (importedCultura === editing) {
-      setSliderValues({
-        soil_min: editForm.umidade_min_pct,
-        soil_maximun: editForm.umidade_max_pct,
-        light_min: editForm.luz_min,
-        light_max: editForm.luz_max,
-        water_min: editForm.agua_min_pct,
-        bomb_time: editForm.tempo_bomba_ms / 1000,
-        freq: editForm.intervalo_horas,
+  function logErrorToState(fonte, descricao, extra = {}) {
+    try {
+      setLogError((prev) => {
+        const listaAnterior = Array.isArray(prev) ? prev : [];
+        const novoErro = {
+          id: prev.length + 1,
+          data_hora: new Date().toLocaleString(),
+          fonte,
+          descricao: descricao?.toString() || "Erro desconhecido",
+          ...extra,
+        };
+        console.warn(`[LOG ERROR] ${fonte}: ${descricao}`);
+        return [...prev, novoErro];
       });
-      setImportedCultura({ ...importedCultura, ...editForm });
+    } catch (e) {
+      console.error("Falha ao registrar log no estado:", e);
     }
-
-    setEditing(null);
-    setCalibMessage({ type: "success", text: `Cultura "${editForm.nome}" atualizada.` });
   }
+  const { data, error } = useEspTelemetry(logErrorToState);
 
-  async function handleDelete(cultura) {
-    if (confirm(`Deseja realmente remover "${cultura.nome}"?`)) {
-      setCulturas((prev) => prev.filter((c) => c !== cultura));
-
-      setRowsDb((prev) => prev.filter((row) => row.id !== cultura.id));
-
-      if (importedCultura === cultura) {
-        setImportedCultura(null);
-        setSliderValues({
-          soil_min: 0,
-          soil_maximun: 100,
-          light_min: 0,
-          light_max: 100,
-          water_min: 15, 
-          bomb_time: 0,
-          freq: 0,
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (log_error.length > 0) {
+        const blob = new Blob([JSON.stringify(log_error, null, 2)], {
+          type: "application/json",
         });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "log_error.json";
+        a.click();
+        URL.revokeObjectURL(url);
+        console.log("Arquivo log_error.json salvo ao sair");
       }
-
-      setCalibMessage({ type: "success", text: `Cultura "${cultura.nome}" removida.` });
-    }
-  }
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+    };
+  }, [log_error]);
 
   return (
     <Layout
@@ -425,7 +339,7 @@ const regraId   = esp?.rule_id ?? 0;
 
               {/* Painel de Calibração */}
               <div className="span-4">
-                <div className="panel">
+                <div className="panel" style={{textAlign: "center"}}>
                   <h3>Visualizar parâmetros de irrigação</h3>
                   <p className="muted">
                     Visualize os valores dos parâmetros de irrigação que estão sendo aplicados no sistema.
@@ -573,36 +487,6 @@ const regraId   = esp?.rule_id ?? 0;
                       }}
                     />
                   </div>
-
-
-                  {/* Botões de calibração */}
-                  <div className="button-group">
-                    <h4>Ações</h4>
-                    <button onClick={() => handleCalibrate("add")} disabled={calibrating}>
-                      Adicionar no catálogo
-                    </button>
-                    <button onClick={() => handleCalibrate("save")} disabled={calibrating}>
-                      Salvar catálogo
-                    </button>
-                    <button onClick={() => handleCalibrate("load")} disabled={calibrating}>
-                      Carregar catálogo
-                    </button>
-                    <button onClick={() => handleCalibrate("reset")} disabled={calibrating}>
-                      Limpar catálogo
-                    </button>
-                  </div>
-
-                  {/* Mensagem de calibração */}
-                  {calibMessage && (
-                    <p
-                      style={{
-                        color: calibMessage.type === "error" ? "#f87171" : "#a7f3d0",
-                        marginTop: "10px",
-                      }}
-                    >
-                      {calibMessage.text}
-                    </p>
-                  )}
                 </div>
               </div>
             </div>
@@ -631,7 +515,6 @@ const regraId   = esp?.rule_id ?? 0;
                 <th>Intervalo (h)</th>
                 <th>Nível Mín. Água (%)</th>
                 <th>Observações</th>
-                <th className="center">Ações</th>
               </tr>
             </thead>
 
@@ -652,25 +535,6 @@ const regraId   = esp?.rule_id ?? 0;
                   <td className="muted italic">
                     {cultura.observacoes || "—"}
                   </td>
-                  <td className="center">
-                    <button className="edit-btn" onClick={() => handleEdit(cultura)}
-                    title="Clique para editar os parâmetros desta planta."
-                    >
-                      < img src={LogoEdit} style={{ width: "16px"}}/>
-                    </button>
-                    <button
-                      className="import-btn"
-                      onClick={() => handleImport(cultura)}
-                      title="Clique para importar os parâmetros desta planta."
-                    >
-                      <img src={LogoImp} style={{ width: "16px" }} />
-                    </button>
-                    <button className="delete-btn" onClick={() => handleDelete(cultura)}
-                      title="Clique para remover os parâmetros desta planta."
-                      >
-                        < img src={LogoDel} style={{ width: "16px"}}/>
-                    </button>
-                  </td>
                 </tr>
               ))}
             </tbody>
@@ -678,151 +542,7 @@ const regraId   = esp?.rule_id ?? 0;
         </div>
       </div>
     )}
-    {editing && (
-        <div className="modal-overlay">
-          <div className="modal">
-            <h3>Editar Cultura: {editForm.nome}</h3>
-
-            <label>Nome</label>
-            <input
-              type="text"
-              value={editForm.nome}
-              onChange={(e) => setEditForm({ ...editForm, nome: e.target.value })}
-            />
-
-            <label>Kc</label>
-            <input
-              type="number"
-              step="0.01"
-              value={editForm.kc}
-              min={0}
-              onChange={(e) => setEditForm({ ...editForm, kc: Number(e.target.value) })}
-            />
-
-            <label>ETc Média</label>
-            <input
-              type="number"
-              step="0.01"
-              value={editForm.etc_media}
-              min={0}
-              onChange={(e) => setEditForm({ ...editForm, etc_media: Number(e.target.value) })}
-            />
-
-            <label>Lâmina de água (L/m²/dia)</label>
-            <input
-              type="number"
-              step="0.01"
-              value={editForm.lamina_agua}
-              min={0}
-              onChange={(e) => setEditForm({ ...editForm, lamina_agua: Number(e.target.value) })}
-            />
-
-            <label>Umidade mínima (%)</label>
-            <input
-              type="number"
-              value={editForm.umidade_min_pct}
-              min={0}
-              max={editForm.umidade_max_pct}
-              onChange={(e) => {
-                const val = Number(e.target.value);
-                if (val >= 0 && val <= editForm.umidade_max_pct)
-                  setEditForm({ ...editForm, umidade_min_pct: val });
-              }}
-            />
-
-            <label>Umidade máxima (%)</label>
-            <input
-              type="number"
-              value={editForm.umidade_max_pct}
-              min={editForm.umidade_min_pct}
-              max={100}
-              onChange={(e) => {
-                const val = Number(e.target.value);
-                if (val >= editForm.umidade_min_pct && val <= 100)
-                  setEditForm({ ...editForm, umidade_max_pct: val });
-              }}
-            />
-
-            <label>Luz mínima (%)</label>
-            <input
-              type="number"
-              value={editForm.luz_min}
-              min={0}
-              max={editForm.luz_max}
-              onChange={(e) => {
-                const val = Number(e.target.value);
-                if (val >= 0 && val <= editForm.luz_max)
-                  setEditForm({ ...editForm, luz_min: val });
-              }}
-            />
-
-            <label>Luz máxima (%)</label>
-            <input
-              type="number"
-              value={editForm.luz_max}
-              min={editForm.luz_min}
-              max={100}
-              onChange={(e) => {
-                const val = Number(e.target.value);
-                if (val >= editForm.luz_min && val <= 100)
-                  setEditForm({ ...editForm, luz_max: val });
-              }}
-            />
-
-            <label>Água mínima (%)</label>
-            <input
-              type="number"
-              value={editForm.agua_min_pct}
-              min={15}
-              max={50}
-              onChange={(e) => {
-                const val = Number(e.target.value);
-                if (val >= 15 && val <= 50)
-                  setEditForm({ ...editForm, agua_min_pct: val });
-              }}
-            />
-
-            <label>Tempo da bomba (s)</label>
-            <input
-              type="number"
-              value={editForm.tempo_bomba_ms}
-              min={0}
-              max={120}
-              onChange={(e) => {
-                const val = Number(e.target.value);
-                if (val >= 0 && val <= 120)
-                  setEditForm({ ...editForm, tempo_bomba_ms: val });
-              }}
-            />
-
-            <label>Intervalo de irrigação (h)</label>
-            <input
-              type="number"
-              value={editForm.intervalo_horas}
-              min={0}
-              max={168}
-              onChange={(e) => {
-                const val = Number(e.target.value);
-                if (val >= 0 && val <= 168)
-                  setEditForm({ ...editForm, intervalo_horas: val });
-              }}
-            />
-
-            <label>Observações</label>
-            <textarea
-              value={editForm.observacoes}
-              onChange={(e) => setEditForm({ ...editForm, observacoes: e.target.value })}
-            />
-
-            <div className="modal-actions">
-              <button onClick={handleSaveEdit}>Salvar</button>
-              <button onClick={() => setEditing(null)}>Cancelar</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ===== Banner/Toast de nível d'água baixo ===== */}
+    {/* ===== Banner/Toast de nível d'água baixo ===== */}
       <Toast
         show={lowLevelToast}
         title="Nível de água baixo"
@@ -837,19 +557,66 @@ const regraId   = esp?.rule_id ?? 0;
         onClose={() => setCalibMessage(null)}
         type={calibMessage?.type}
       />
-      {activeMenu === "historico" && (
+      {activeMenu === "calibracao" && (
         <div className="panel">
-          <h3>Histórico</h3>
-        </div>
+          <h3>Calibração dos Sensores</h3>
+          <p className="muted">
+              Clique para calibrar os sensores
+            </p>
+            <div className="button-group">
+              <h4>Solo</h4>
+              <button onClick={() => handleCalibrate("sd")} disabled={calibrating}>Solo Seco</button>
+              <button onClick={() => handleCalibrate("sw")} disabled={calibrating}>Solo Molhado</button>
+              <h4>Luz</h4>
+              <button onClick={() => handleCalibrate("ld")} disabled={calibrating}>Luz Escuro</button>
+              <button onClick={() => handleCalibrate("ll")} disabled={calibrating}>Luz Sol</button>
+              <h4>Água</h4>
+              <button onClick={() => handleCalibrate("we")} disabled={calibrating}>Água Vazia</button>
+              <button onClick={() => handleCalibrate("wf")} disabled={calibrating}>Água Cheia</button>
+            </div>
+            {calibMessage && (
+              <p style={{ color: calibMessage.type === "error" ? "#f87171" : "#a7f3d0", marginTop: "10px" }}>
+                {calibMessage.text}
+              </p>
+            )}
+          </div>
       )}
-      {activeMenu === "configuracoes" && (
+      {activeMenu === "log_error" && (
         <div className="panel">
-          <h3>Configurações</h3>
-        </div>
-      )}
-      {activeMenu === "relatorios" && (
-        <div className="panel">
-          <h3>Relatórios</h3>
+          <h3>Log de Erros</h3>
+          <div style={{ overflowX: "auto" }}>
+            <table className="perfil-table">
+              <thead>
+                <tr>
+                  <th>Identificador</th>
+                  <th>Data e Hora</th>
+                  <th>Fonte</th>
+                  <th>Descrição do Erro</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {log_error.length === 0 ? (
+                  <tr>
+                    <td colSpan="4" style={{ textAlign: "center", color: "#999" }}>
+                      Nenhum erro registrado ainda.
+                    </td>
+                  </tr>
+                ) : (
+                  log_error.map((e) => (
+                    <tr key={e.id}>
+                      <td className="bold">{e.id}</td>
+                      <td>{e.data_hora}</td>
+                      <td>{e.fonte}</td>
+                      <td className="muted italic">
+                        {e.descricao || "—"}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </Layout>
