@@ -22,5 +22,53 @@
     "data_hora": "23/10/2025, 17:13:00",
     "fonte": "useEspTelemetry",
     "descricao": "Não foi possível conectar ao ESP32. Verifique se ele está ligado e na mesma rede Wi-Fi."
+  },
+  {
+    "id": 5,
+    "data_hora": "22/10/2025, 21:19:06",
+    "fonte": "handleCalibrate",
+    "descricao": "Falha de conexão ao calibrar 'sd'. Verifique a internet ou o dispositivo.",
+    "type": "sd",
+    "rawError": "Failed to fetch"
+  },
+  {
+    "id": 6,
+    "data_hora": "22/10/2025, 21:19:06",
+    "fonte": "useEspTelemetry",
+    "descricao": "Não foi possível conectar ao ESP32. Verifique se ele está ligado e na mesma rede Wi-Fi.",
+    "tipoErro": "esp_offline",
+    "rawError": "Failed to fetch"
+  },
+  {
+    "id": 7,
+    "data_hora": "22/10/2025, 21:19:27",
+    "fonte": "handleCalibrate",
+    "descricao": "Falha de conexão ao calibrar 'ld'. Verifique a internet ou o dispositivo.",
+    "type": "ld",
+    "rawError": "Failed to fetch"
+  },
+  {
+    "id": 8,
+    "data_hora": "22/10/2025, 21:19:37",
+    "fonte": "handleCalibrate",
+    "descricao": "Falha de conexão ao calibrar 'wf'. Verifique a internet ou o dispositivo.",
+    "type": "wf",
+    "rawError": "Failed to fetch"
+  },
+  {
+    "id": 9,
+    "data_hora": "22/10/2025, 21:24:07",
+    "fonte": "useEspTelemetry",
+    "descricao": "Não foi possível conectar ao ESP32. Verifique se ele está ligado e na mesma rede Wi-Fi.",
+    "tipoErro": "esp_offline",
+    "rawError": "Failed to fetch"
+  },
+  {
+    "id": 10,
+    "data_hora": "22/10/2025, 21:29:16",
+    "fonte": "useEspTelemetry",
+    "descricao": "Não foi possível conectar ao ESP32. Verifique se ele está ligado e na mesma rede Wi-Fi.",
+    "tipoErro": "esp_offline",
+    "rawError": "Failed to fetch"
   }
 ]
