@@ -10,53 +10,84 @@ export type Row = {
   rule?: number | string | null;
 };
 
-type Props = { rows?: Row[] };
+type Props = {
+  rows?: Row[];
+  sortField?: keyof Row;
+  sortOrder?: "asc" | "desc";
+  onSortChange?: (field: keyof Row) => void;
+  sortable?: boolean;
+};
 
-export default function DataTable({ rows = [] }: Props) {
+export default function DataTable({
+  rows = [],
+  sortField,
+  sortOrder,
+  onSortChange,
+  sortable = true,
+}: Props) {
+  const renderSortButton = (field: keyof Row) => {
+    if (!sortable) return null;
+
+    const active = sortField === field;
+    const arrow = !active ? "↕" : sortOrder === "asc" ? "▲" : "▼";
+
+    return (
+      <button
+        onClick={() => onSortChange?.(field)}
+        className={`sort-btn ${active ? "active" : ""}`}
+        title={`Ordenar por ${field}`}
+      >
+        {arrow}
+      </button>
+    );
+  };
+
   return (
-    <>
-      <div className="panel-header">
-        <h3>Tabela de Dados</h3>
-      </div>
-      <div className="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Data/Hora</th>
-              <th>Solo</th>
-              <th>Temp (°C)</th>
-              <th>Umid (%)</th>
-              <th>Luz</th>
-              <th>Bomba</th>
-              <th>Tempo (ms)</th>
-              <th>Regra</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(rows ?? []).slice().reverse().map((r, i) => {
-              const tempC = Number(r?.tempC ?? 0);
-              const hum = Math.round(Number(r?.humAir ?? 0));
-              const soil = Number(r?.soil ?? 0);
-              const light = Number(r?.light ?? 0);
-              const pump = !!r?.pump;
-              const ts = r?.ts ? new Date(r.ts) : null;
-
-              return (
-                <tr key={String(r?.id ?? i)}>
-                  <td>{ts ? ts.toLocaleString() : "—"}</td>
-                  <td>{soil}</td>
-                  <td>{Number.isFinite(tempC) ? tempC.toFixed(1) : "—"}</td>
-                  <td>{Number.isFinite(hum) ? hum : "—"}</td>
-                  <td>{light}</td>
-                  <td>{pump ? "ON" : "OFF"}</td>
-                  <td>{Number(r?.dur_ms ?? 0)}</td>
-                  <td>{r?.rule ?? "-"}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    </>
+    <div className="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>
+              Data/Hora {renderSortButton("ts")}
+            </th>
+            <th>
+              Solo {renderSortButton("soil")}
+            </th>
+            <th>
+              Temp (°C) {renderSortButton("tempC")}
+            </th>
+            <th>
+              Umid (%) {renderSortButton("humAir")}
+            </th>
+            <th>
+              Luz {renderSortButton("light")}
+            </th>
+            <th>Bomba {renderSortButton("pump")}</th>
+            <th>
+              Tempo (ms) {renderSortButton("dur_ms")}
+            </th>
+            <th>Regra {renderSortButton("rule")}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice().map((r, i) => {
+            const ts = r.ts ? new Date(r.ts) : null;
+            return (
+              <tr key={String(r.id ?? i)}>
+                <td>{ts ? ts.toLocaleString() : "—"}</td>
+                <td>{r.soil}</td>
+                <td>{r.tempC?.toFixed(1)}</td>
+                <td>{r.humAir}</td>
+                <td>{r.light}</td>
+                <td>{r.pump ? "ON" : "OFF"}</td>
+                <td>{r.dur_ms}</td>
+                <td>{r.rule}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
+
