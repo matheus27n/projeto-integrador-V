@@ -498,9 +498,38 @@ tbody td { padding: 10px 8px; border-bottom: 1px solid rgba(255,255,255,.04); }
   background: #e5e7eb;
 }
 
+/*=======VISUALIZAR HISTÓRICO========*/
+.controls {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  align-items: center;
+}
+.controls label {
+  font-weight: 500;
+  color: #ddd;
+}
+select {
+  background: #1e293b;
+  border: 1px solid #334155;
+  color: #fff;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+.sort-btn {
+  background: none;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  font-size: 0.8rem;
+  margin-left: 4px;
+  transition: color 0.2s;
+}
 
+.sort-btn:hover {
+  color: #f8fafc;
+}
 
-
-
-
-
+th {
+  white-space: nowrap;
+}
