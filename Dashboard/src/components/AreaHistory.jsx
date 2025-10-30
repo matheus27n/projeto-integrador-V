@@ -3,7 +3,7 @@ import {
 } from "recharts";
 
 export default function AreaHistory({ rows = [], title = "Histórico" }) {
-  const data = rows.map((r, i) => ({
+  const data = rows.slice().reverse().map((r, i) => ({
     idx: i + 1,
     soil: Number(r?.soil ?? 0),
   }));
