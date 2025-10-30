@@ -95,8 +95,8 @@ export default function App() {
   const bombaOnLive = !!esp?.pump_on; 
   const waterNowPct = typeof esp?.water_pct === "number" ? esp.water_pct : null;
 
-const pumpMsSug = esp?.pump_ms_sug ?? 0;
-const regraId   = esp?.rule_id ?? 0;
+  const pumpMsSug = esp?.pump_ms_sug ?? 0;
+  const regraId   = esp?.rule_id ?? 0;
 
   const [lowLevelToast, setLowLevelToast] = useState(false);
   const lastWaterOkRef = useRef(true);
@@ -111,6 +111,9 @@ const regraId   = esp?.rule_id ?? 0;
   }, [waterNowPct]);
 
   const [rowsDb, setRowsDb] = useState([]);
+  const [filterType, setFilterType] = useState("todos");
+  const [sortField, setSortField] = useState("ts");
+  const [sortOrder, setSortOrder] = useState("desc");
 
   useEffect(() => {
     if (!deviceId) return;
@@ -137,13 +140,117 @@ const regraId   = esp?.rule_id ?? 0;
           rule: d.source === "manual" ? "MANUAL" : (d.rule_id ?? "-"),
           dur_ms: Number(d.pump_ms ?? 0),
           source: d.source ?? null,
+          manual: d.source === "manual"
         });
       });
-      setRowsDb(arr.reverse()); 
+      setRowsDb(arr); 
     });
 
     return () => unsub();
   }, [deviceId]);
+
+  const filteredRows = useMemo(() => {
+    const now = new Date();
+
+    if (filterType === "hoje") {
+      const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      return rowsDb.filter((r) => new Date(r.ts) >= start);
+    }
+
+    if (filterType === "semana") {
+      const startOfWeek = new Date(now);
+      startOfWeek.setDate(now.getDate() - now.getDay());
+      startOfWeek.setHours(0, 0, 0, 0);
+
+      return rowsDb.filter((r) => new Date(r.ts) >= startOfWeek);
+    }
+
+    if (filterType === "mes") {
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      return rowsDb.filter((r) => new Date(r.ts) >= startOfMonth);
+    }
+
+    return rowsDb; 
+  }, [rowsDb, filterType]);
+
+  const sortedRows = useMemo(() => {
+    const arr = [...filteredRows];
+
+    const getComparable = (row, field) => {
+      const v = row?.[field];
+
+      if (field === "ts") {
+        const d = v ? new Date(v) : null;
+        return d && !isNaN(d.getTime()) ? d.getTime() : -Infinity;
+      }
+
+      if (field === "rule" || field === "source") {
+        if (typeof v === "string") {
+          const lower = v.toLowerCase();
+          if (lower === "manual" || lower === "man") return { type: "manual", val: 2 };
+          if (lower === "-" || lower === "null") return { type: "empty", val: 0 };
+          const n = Number(v);
+          if (!Number.isNaN(n)) return { type: "number", val: n };
+          return { type: "string", val: v };
+        }
+        if (typeof v === "number") return { type: "number", val: v };
+        if (v === null || v === undefined) return { type: "empty", val: 0 };
+        return { type: "unknown", val: String(v) };
+      }
+
+      if (typeof v === "boolean") return v ? 1 : 0;
+      if (typeof v === "number") return v;
+      if (typeof v === "string" && v.trim() !== "") {
+        const n = Number(v);
+        if (!Number.isNaN(n)) return n;
+        return v.toLowerCase(); 
+      }
+
+      return -Infinity;
+    };
+
+    arr.sort((a, b) => {
+      const dir = sortOrder === "asc" ? 1 : -1;
+      const A = getComparable(a, sortField);
+      const B = getComparable(b, sortField);
+
+      if (sortField === "rule" || sortField === "source") {
+        const typePriority = { empty: 0, number: 1, string: 1.5, manual: 2, unknown: 1.2 };
+        const aType = A.type || "unknown";
+        const bType = B.type || "unknown";
+
+        if (typePriority[aType] !== typePriority[bType]) {
+          return (typePriority[aType] - typePriority[bType]) * dir;
+        }
+
+        if (aType === "number" && bType === "number") {
+          return (A.val - B.val) * dir;
+        }
+
+        if (A.val < B.val) return -1 * dir;
+        if (A.val > B.val) return 1 * dir;
+      } else {
+        const aVal = A;
+        const bVal = B;
+
+        if (typeof aVal === "number" && typeof bVal === "number") {
+          if (aVal < bVal) return -1 * dir;
+          if (aVal > bVal) return 1 * dir;
+        } else {
+          const sa = String(aVal).toLowerCase();
+          const sb = String(bVal).toLowerCase();
+          if (sa < sb) return -1 * dir;
+          if (sa > sb) return 1 * dir;
+        }
+      }
+
+      const ta = a.ts ? new Date(a.ts).getTime() : 0;
+      const tb = b.ts ? new Date(b.ts).getTime() : 0;
+      return (ta - tb) * dir;
+    });
+
+    return arr;
+  }, [filteredRows, sortField, sortOrder]);
 
   const latestDb = rowsDb.at(-1);
 
@@ -331,10 +438,9 @@ const regraId   = esp?.rule_id ?? 0;
             </div>
           </div>
 
-          <div className="grid cols-12">
-              {/* Tabela Firestore */}
+            <div className="grid cols-12">
               <div className="span-8">
-                <DataTable rows={rowsDb.slice(-10)} />
+                <DataTable rows={rowsDb.slice(0,10)} sortable={false} />
               </div>
 
               {/* Painel de Calibração */}
@@ -492,6 +598,40 @@ const regraId   = esp?.rule_id ?? 0;
             </div>
           </> 
         )}
+      {activeMenu === "history" && (
+        <div className="panel">
+          <h3>Visualizar Histórico</h3>
+
+          {/* ===== FILTROS ===== */}
+          <div className="controls" style={{ display: "flex", gap: "1em" , marginTop:"1em" , marginBottom: "1em" }}>
+            <label>
+              Filtrar:
+              <select style={{marginLeft : "1em"}} value={filterType} onChange={(e) => setFilterType(e.target.value)}>
+                <option value="todos">Todos</option>
+                <option value="hoje">Hoje</option>
+                <option value="semana">Esta semana</option>
+                <option value="mes">Este mês</option>
+              </select>
+            </label>
+          </div>
+
+          {/* ===== TABELA ===== */}
+          <DataTable
+            rows={sortedRows}
+            sortField={sortField}
+            sortOrder={sortOrder}
+            sortable = {true}
+            onSortChange={(field) => {
+              if (sortField !== field) {
+                setSortField(field);
+                setSortOrder("asc");
+              } else {
+                setSortOrder(sortOrder === "asc" ? "desc" : "asc");
+              }
+            }}
+          />
+        </div>
+      )}
       {activeMenu === "catalogo" && (
       <div className="panel">
         <h3>Catálogo de Plantas</h3>
