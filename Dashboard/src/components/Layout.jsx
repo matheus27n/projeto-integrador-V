@@ -12,10 +12,10 @@ export default function Layout({
 
   const menuItems = [
     { key: "dashboard", label: "Dashboard" },
+    { key: "history", label: "Visualizar Histórico"},
     { key: "catalogo", label: "Catálogo de Plantas" },
-    { key: "historico", label: "Histórico" },
-    { key: "configuracoes", label: "Configurações" },
-    { key: "relatorios", label: "Relatórios" },
+    { key: "calibracao", label: "Calibração dos Sensores" },
+    { key: "log_error", label: "Log de Erros"}
   ];
 
   return (
