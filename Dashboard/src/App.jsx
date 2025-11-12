@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 import Toast from "./components/Toast";
-import WaterPie from "./components/WaterPie";
 import LogoImp from "./components/data/import.png";
 import LogoEdit from "./components/data/edit.png";
 import LogoDel from "./components/data/remove.png";
